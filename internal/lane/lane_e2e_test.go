@@ -354,7 +354,7 @@ func TestLaneEndToEnd(t *testing.T) {
 
 	t.Run("a restarted lane comes back warm from the saved session", func(t *testing.T) {
 		cancel, done := startServe(t, cfg, state)
-		defer func() { cancel(); <-done }()
+		defer func() { cancel(); _ = <-done }()
 		who, err := c.Whoami(ctx, "work")
 		if err != nil || !who.Live {
 			t.Fatalf("restart lost the session: %+v %v", who, err)

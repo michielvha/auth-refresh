@@ -158,7 +158,7 @@ func probeInHelper(ctx context.Context, chromiumArgs []string) (string, error) {
 	case waitErr = <-done:
 	case <-ctx.Done():
 		killTree(cmd.Process.Pid, true)
-		<-done
+		_ = <-done // Cancellation is the error; wait only to reap the owned helper.
 		return "", ctx.Err()
 	}
 	var r probeResult

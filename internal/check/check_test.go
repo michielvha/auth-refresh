@@ -253,7 +253,7 @@ func TestAWSSSO(t *testing.T) {
 	}
 	// sha1("s"), the AWS CLI's cache key for sso_session "s".
 	const ours = "a0f1490a20d0211c997b44bc357e1972deab8ae3.json"
-	id := config.Identity{Name: "aws", Type: "aws_sso", SSOSession: "s", StartURL: start}
+	id := config.Identity{Name: "aws", Type: "aws_sso", SSOSession: "s", StartURL: start, Lane: "work"}
 	probe := id
 	probe.ProbeProfile = "dev"
 	type setup func(t *testing.T, home string)
@@ -284,10 +284,10 @@ func TestAWSSSO(t *testing.T) {
 		},
 		{"wrong start URL", id, func(t *testing.T, h string) {
 			write(t, h, ours, token("https://d-2.awsapps.com/start", "2099-01-01T00:00:00Z"))
-		}, nil, Dead, "config says"},
-		{"malformed cache is reported", id, func(t *testing.T, h string) { write(t, h, ours, `{"accessToken":`) }, nil, Dead, "malformed"},
+		}, nil, Warn, "config says"},
+		{"malformed cache is reported", id, func(t *testing.T, h string) { write(t, h, ours, `{"accessToken":`) }, nil, Warn, "malformed"},
 		{"cache without a token is reported", id, func(t *testing.T, h string) { write(t, h, ours, `{"clientId":"c"}`) }, nil, Dead, "no accessToken"},
-		{"unreadable expiry is reported", id, func(t *testing.T, h string) { write(t, h, ours, token(start, "tomorrow")) }, nil, Dead, "unreadable expiresAt"},
+		{"unreadable expiry is reported", id, func(t *testing.T, h string) { write(t, h, ours, token(start, "tomorrow")) }, nil, Warn, "unreadable expiresAt"},
 		{
 			"probe ok even though the cached access token expired (CLI refreshed it)", probe,
 			func(t *testing.T, h string) { write(t, h, ours, token(start, "2026-10-21T00:00:00Z")) },

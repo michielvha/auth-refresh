@@ -252,16 +252,15 @@ func ssoCacheFile(home, session string) string {
 
 func normStartURL(u string) string { return strings.TrimRight(strings.TrimSpace(u), "/#") }
 
-// ssoToken reads the cached token of id's sso-session. alive is false with a
-// reason for a missing, malformed, foreign or expired token.
-func ssoToken(id config.Identity, d Deps) (alive bool, detail string) {
+// ssoToken distinguishes absent/expired credentials from unreadable or foreign cache metadata.
+func ssoToken(id config.Identity, d Deps) (Status, string) {
 	file := ssoCacheFile(d.Home, id.SSOSession)
 	raw, err := os.ReadFile(file)
 	if errors.Is(err, os.ErrNotExist) {
-		return false, fmt.Sprintf("no SSO token cached for sso_session %s", id.SSOSession)
+		return Dead, fmt.Sprintf("no SSO token cached for sso_session %s", id.SSOSession)
 	}
 	if err != nil {
-		return false, fmt.Sprintf("cannot read SSO cache %s: %v", filepath.Base(file), err)
+		return Warn, fmt.Sprintf("cannot read SSO cache %s: %v", filepath.Base(file), err)
 	}
 	var c struct {
 		AccessToken string `json:"accessToken"`
@@ -269,19 +268,25 @@ func ssoToken(id config.Identity, d Deps) (alive bool, detail string) {
 		ExpiresAt   string `json:"expiresAt"`
 	}
 	if err := json.Unmarshal(raw, &c); err != nil {
-		return false, fmt.Sprintf("SSO cache %s is malformed: %v", filepath.Base(file), err)
+		return Warn, fmt.Sprintf("SSO cache %s is malformed: %v", filepath.Base(file), err)
 	}
-	if c.AccessToken == "" || c.ExpiresAt == "" {
-		return false, fmt.Sprintf("SSO cache %s has no accessToken/expiresAt", filepath.Base(file))
+	if c.AccessToken == "" {
+		return Dead, fmt.Sprintf("SSO cache %s has no accessToken", filepath.Base(file))
+	}
+	if c.ExpiresAt == "" {
+		return Warn, "SSO cache has no expiresAt metadata"
 	}
 	if id.StartURL != "" && normStartURL(c.StartURL) != normStartURL(id.StartURL) {
-		return false, fmt.Sprintf("SSO cache for sso_session %s is for start URL %s, config says %s", id.SSOSession, c.StartURL, id.StartURL)
+		return Warn, fmt.Sprintf("SSO cache for sso_session %s is for start URL %s, config says %s", id.SSOSession, c.StartURL, id.StartURL)
 	}
 	left, alive := until(c.ExpiresAt, d.Now())
 	if !alive && left != "expired" {
-		return false, fmt.Sprintf("SSO cache %s has an unreadable expiresAt %q", filepath.Base(file), c.ExpiresAt)
+		return Warn, fmt.Sprintf("SSO cache %s has an unreadable expiresAt %q", filepath.Base(file), c.ExpiresAt)
 	}
-	return alive, "SSO token " + left
+	if alive {
+		return OK, "SSO token " + left
+	}
+	return Dead, "SSO token " + left
 }
 
 var (
@@ -291,16 +296,12 @@ var (
 
 func awsSSO(ctx context.Context, id config.Identity, d Deps) (Status, string) {
 	if id.ProbeProfile == "" {
-		alive, sso := ssoToken(id, d)
-		if alive {
-			return OK, sso
-		}
-		return Dead, sso
+		return ssoToken(id, d)
 	}
 	// The probe first: a successful call may refresh the cached token.
 	o := runT(ctx, d, 25*time.Second, nil, "aws", "sts", "get-caller-identity",
 		"--profile", id.ProbeProfile, "--query", "Arn", "--output", "text")
-	alive, sso := ssoToken(id, d)
+	cacheStatus, sso := ssoToken(id, d)
 	if o.Code == 0 {
 		return OK, fmt.Sprintf("%s -> %s; %s", id.ProbeProfile, lastLine(o.Stdout, 120), sso)
 	}
@@ -311,11 +312,13 @@ func awsSSO(ctx context.Context, id config.Identity, d Deps) (Status, string) {
 	switch {
 	case setupOrPermissionRe.MatchString(o.Combined()):
 		return Warn, fmt.Sprintf("%s probe failed, not recognised as an auth failure: %s; %s", id.ProbeProfile, why, sso)
+	case cacheStatus == Warn:
+		return Warn, sso
 	case awsAuthRe.MatchString(o.Combined()):
 		return Dead, fmt.Sprintf("%s: %s; %s", id.ProbeProfile, why, sso)
 	case o.Code == 124 || awsNetRe.MatchString(o.Combined()):
 		return Warn, fmt.Sprintf("%s unreachable, not an auth failure: %s; %s", id.ProbeProfile, why, sso)
-	case !alive:
+	case cacheStatus == Dead:
 		return Dead, fmt.Sprintf("%s: %s; %s", id.ProbeProfile, why, sso)
 	}
 	return Warn, fmt.Sprintf("%s probe failed, not recognised as an auth failure: %s; %s", id.ProbeProfile, why, sso)

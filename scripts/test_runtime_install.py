@@ -47,7 +47,7 @@ class RuntimeInstallTests(unittest.TestCase):
         with patch.object(self.module.sys, "argv", ["installer"]), \
              patch.object(self.module.platform, "system", return_value="Linux"), \
              patch.object(self.module.platform, "machine", return_value="x86_64"), \
-             patch.object(self.module.urllib.request, "urlopen", return_value=io.BytesIO(self.archive)), \
+             patch.object(self.module, "download", return_value=self.archive), \
              contextlib.redirect_stdout(io.StringIO()) as output:
             self.module.main()
         return Path(output.getvalue().strip())

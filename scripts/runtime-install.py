@@ -9,7 +9,25 @@ import subprocess
 import sys
 import tarfile
 import tempfile
-import urllib.request
+from urllib.parse import urlsplit
+
+
+def download(url):
+    parts = urlsplit(url)
+    if parts.scheme != "https" or not parts.hostname or parts.username or parts.password:
+        raise ValueError("release URL must use HTTPS without embedded credentials")
+    with tempfile.NamedTemporaryFile(prefix="auth-refresh-download-") as staged:
+        result = subprocess.run([
+            "curl", "--fail", "--location", "--silent", "--show-error",
+            "--max-time", "60", "--max-filesize", str(128 * 1024 * 1024),
+            "--output", staged.name, url,
+        ], capture_output=True, timeout=70)
+        if result.returncode:
+            raise ValueError("release download failed")
+        data = staged.read(128 * 1024 * 1024 + 1)
+        if len(data) > 128 * 1024 * 1024:
+            raise ValueError("release archive exceeds size limit")
+        return data
 
 
 def main():
@@ -28,10 +46,7 @@ def main():
     base = Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache"))
     target = base / "auth-refresh/bin" / lock["version"] / key / "auth-refresh"
     if not target.exists():
-        if not item["url"].startswith("https://"):
-            raise ValueError("release URL must use HTTPS")
-        with urllib.request.urlopen(item["url"], timeout=60) as response:
-            archive = response.read(128 * 1024 * 1024 + 1)
+        archive = download(item["url"])
         if hashlib.sha256(archive).hexdigest() != item["asset_sha256"]:
             raise ValueError("release archive checksum mismatch")
         with tarfile.open(fileobj=io.BytesIO(archive), mode="r:gz") as bundle:
@@ -58,6 +73,6 @@ def main():
 if __name__ == "__main__":
     try:
         main()
-    except (OSError, ValueError, KeyError, subprocess.SubprocessError) as error:
+    except (OSError, ValueError, KeyError, tarfile.TarError, subprocess.SubprocessError) as error:
         print("auth-refresh: " + str(error), file=sys.stderr)
         sys.exit(1)

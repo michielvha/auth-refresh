@@ -64,7 +64,7 @@ install `auth-refresh@vhco-tools`. Installing vh-adlc alone does not enable auth
 Refresh the marketplace and the plugin in your client's native manager to update it. Uninstalling
 the plugin leaves private config, credentials, CLI caches and lane sessions on disk.
 
-The new skill's installer requires Bash and Python 3. It checks the pinned archive and binary
+The new skill's installer requires Bash, curl and Python 3. It checks the pinned archive and binary
 SHA-256 values before execution and verifies the cached binary on every reuse. It writes only
 to your user cache. It never builds missing source or changes shell profiles.
 

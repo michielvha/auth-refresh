@@ -90,7 +90,7 @@ func TestCLIIdentities(t *testing.T) {
 			"azure timeout without output",
 			config.Identity{Name: "az", Type: "azure"},
 			map[string]Output{"az account": {Code: 124}},
-			Dead, "timed out",
+			Warn, "timed out",
 		},
 		{
 			"docker ok",
@@ -400,8 +400,8 @@ func TestHTTPUp(t *testing.T) {
 		t.Fatalf("got %+v", r)
 	}
 	srv.Close()
-	if r := One(context.Background(), config.Identity{Type: "http_up", URL: srv.URL, ExpectStatus: 200}, deps(t, nil)); r.Status != Dead {
-		t.Fatalf("closed server should be DEAD, got %+v", r)
+	if r := One(context.Background(), config.Identity{Type: "http_up", URL: srv.URL, ExpectStatus: 200}, deps(t, nil)); r.Status != Warn {
+		t.Fatalf("closed server should be WARN, got %+v", r)
 	}
 }
 

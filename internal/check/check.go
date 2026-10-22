@@ -207,6 +207,9 @@ func lastLine(s string, n int) string {
 }
 
 var aadstsRe = regexp.MustCompile(`AADSTS\d+`)
+var azureAuthRe = regexp.MustCompile(`(?i)AADSTS(?:70043|700082|700084|50058|50173|50076)|refresh token.*expired|please run.*az login|invalid_grant|interaction_required`)
+var transportRe = regexp.MustCompile(`(?i)timed? out|timeout|unreachable|failed to connect|could not connect|connection (?:refused|reset)|no such host|name resolution|failed to resolve|service unavailable|serviceunavailable|tls|x509|dial tcp|throttl|rate limit`)
+var authenticationRe = regexp.MustCompile(`(?i)unauthorized|authentication required|invalid.*token|token.*invalid|token.*expired|bad credentials|not logged in`)
 
 func azure(ctx context.Context, id config.Identity, d Deps) (Status, string) {
 	last := "never"
@@ -229,7 +232,10 @@ func azure(ctx context.Context, id config.Identity, d Deps) (Status, string) {
 		if rc == 124 && why == "" {
 			why = "timed out"
 		}
-		return Dead, fmt.Sprintf("needs `start %s` (last login %s): %s", id.Name, last, why)
+		if azureAuthRe.MatchString(out) {
+			return Dead, fmt.Sprintf("needs `start %s` (last login %s): %s", id.Name, last, why)
+		}
+		return Warn, fmt.Sprintf("probe failed, not recognised as an auth failure (last login %s): %s", last, why)
 	}
 	return OK, fmt.Sprintf("access token until %s (last login %s)", lastLine(o.Stdout, 40), last)
 }
@@ -300,10 +306,12 @@ func awsSSO(ctx context.Context, id config.Identity, d Deps) (Status, string) {
 		why = "timed out"
 	}
 	switch {
-	case !alive || awsAuthRe.MatchString(o.Combined()):
+	case awsAuthRe.MatchString(o.Combined()):
 		return Dead, fmt.Sprintf("%s: %s; %s", id.ProbeProfile, why, sso)
 	case o.Code == 124 || awsNetRe.MatchString(o.Combined()):
 		return Warn, fmt.Sprintf("%s unreachable, not an auth failure: %s; %s", id.ProbeProfile, why, sso)
+	case !alive:
+		return Dead, fmt.Sprintf("%s: %s; %s", id.ProbeProfile, why, sso)
 	}
 	return Warn, fmt.Sprintf("%s probe failed, not recognised as an auth failure: %s; %s", id.ProbeProfile, why, sso)
 }
@@ -368,6 +376,8 @@ func kube(ctx context.Context, id config.Identity, d Deps) (Status, string) {
 		return Warn, fmt.Sprintf("context %s: timed out, network or a credential plugin waiting for input; check %s", id.Context, rides)
 	case kubeTLSRe.MatchString(all):
 		return Warn, fmt.Sprintf("context %s: TLS problem, not a login: %s", id.Context, why)
+	case strings.Contains(all, "executable") && (strings.Contains(all, "not found") || strings.Contains(all, "permission denied")):
+		return Warn, "credential plugin setup problem: " + why
 	case kubeAuthRe.MatchString(all):
 		return Dead, fmt.Sprintf("context %s: %s (rides on %s)", id.Context, why, rides)
 	case kubeForbiddenRe.MatchString(all):
@@ -453,11 +463,17 @@ func ghFromJSON(id config.Identity, entries []ghEntry) (Status, string) {
 	case "timeout":
 		return Warn, fmt.Sprintf("%s on %s: timed out, not an auth failure", who, id.Host)
 	}
+	if transportRe.MatchString(e.Error) {
+		return Warn, fmt.Sprintf("%s on %s: service unavailable, not a login", who, id.Host)
+	}
 	return Dead, fmt.Sprintf("%s on %s: %s", who, id.Host, lastLine(strings.SplitN(e.Error, "\n", 2)[0], 90))
 }
 
 func ghFromText(id config.Identity, o Output) (Status, string) {
 	all := o.Combined()
+	if transportRe.MatchString(all) {
+		return Warn, "GitHub unreachable, not an auth failure"
+	}
 	host := regexp.QuoteMeta(id.Host)
 	acct := `\S+`
 	if id.Account != "" {
@@ -482,7 +498,10 @@ func docker(ctx context.Context, id config.Identity, d Deps) (Status, string) {
 	if o.Code == 0 {
 		return OK, strings.SplitN(id.ProbeImage, "/", 2)[0]
 	}
-	return Dead, lastLine(o.Combined(), 100)
+	if o.Code != 124 && authenticationRe.MatchString(o.Combined()) {
+		return Dead, lastLine(o.Combined(), 100)
+	}
+	return Warn, "registry probe failed, not recognised as an auth failure: " + lastLine(o.Combined(), 100)
 }
 
 func httpToken(ctx context.Context, id config.Identity, d Deps) (Status, string) {
@@ -514,9 +533,15 @@ func httpToken(ctx context.Context, id config.Identity, d Deps) (Status, string)
 		return OK, "valid"
 	}
 	if code == 0 {
-		return Dead, "unreachable: " + body + warn
+		return Warn, "unreachable: " + body + warn
 	}
-	return Dead, fmt.Sprintf("HTTP %d, rejected%s", code, warn)
+	if code == http.StatusUnauthorized {
+		return Dead, fmt.Sprintf("HTTP %d, rejected%s", code, warn)
+	}
+	if code == http.StatusOK && strings.Contains(strings.ReplaceAll(body, " ", ""), `"valid":false`) {
+		return Dead, "token rejected" + warn
+	}
+	return Warn, fmt.Sprintf("HTTP %d, cannot establish token validity%s", code, warn)
 }
 
 func authHeader(scheme, tok string) string {
@@ -535,7 +560,7 @@ func httpUp(ctx context.Context, id config.Identity, d Deps) (Status, string) {
 	if code == id.ExpectStatus {
 		return OK, fmt.Sprintf("HTTP %d %s", code, id.URL)
 	}
-	return Dead, fmt.Sprintf("HTTP %d %s", code, id.URL)
+	return Warn, fmt.Sprintf("HTTP %d %s (service health, not a login)", code, id.URL)
 }
 
 // get returns status 0 and a short reason on a transport failure.

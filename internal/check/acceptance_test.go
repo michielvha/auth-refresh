@@ -2,6 +2,7 @@ package check
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -10,6 +11,38 @@ import (
 
 	"github.com/michielvha/auth-refresh/internal/config"
 )
+
+func TestTokenFileAndPartialResponseFailures(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		conn, buffer, err := w.(http.Hijacker).Hijack()
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		defer func() { _ = conn.Close() }()
+		_, _ = fmt.Fprint(buffer, "HTTP/1.1 200 OK\r\nContent-Length: 100\r\n\r\n{\"valid\":true}")
+		_ = buffer.Flush()
+	}))
+	defer srv.Close()
+	file := filepath.Join(t.TempDir(), "token")
+	if err := os.WriteFile(file, []byte("fixture"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	id := config.Identity{Name: "pat", Type: "http_token", File: file, URL: srv.URL, Expect: `"valid":true`, Retries: 1, Fix: "person renews token"}
+	if r := One(context.Background(), id, deps(t, nil)); r.Status != Warn || r.Fix != "" {
+		t.Fatalf("truncated response: %+v", r)
+	}
+	if err := os.WriteFile(file, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if r := One(context.Background(), id, deps(t, nil)); r.Status != Missing {
+		t.Fatalf("empty file: %+v", r)
+	}
+	id.File = t.TempDir()
+	if r := One(context.Background(), id, deps(t, nil)); r.Status != Warn || r.Fix != "" {
+		t.Fatalf("unreadable file: %+v", r)
+	}
+}
 
 // These acceptance cases run through a Go overlay in the standalone component.
 // They use its production One entry point and its existing fake CLI runner.

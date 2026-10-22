@@ -1,7 +1,7 @@
 {
   "_comment": "Copy to ~/.config/auth-refresh/config.json (or point AUTH_REFRESH_CONFIG at it). Host-specific; do not commit your real one.",
-  "path_prepend": ["/home/linuxbrew/.linuxbrew/bin", "/home/linuxbrew/.linuxbrew/sbin"],
-  "required_binaries": ["git", "curl", "node"],
+  "path_prepend": [],
+  "required_binaries": ["git", "curl"],
   "creds_file": "~/.config/auth-refresh/creds",
 
   "idp": {
@@ -16,9 +16,7 @@
   "browser": {
     "chromium_args": [],
     "ignore_https_errors": false,
-    "locale": "en-US",
-    "capture_saml_assertions": false,
-    "netlog_bodies": false
+    "locale": "en-US"
   },
 
   "lanes": {

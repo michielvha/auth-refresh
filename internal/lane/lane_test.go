@@ -2,8 +2,12 @@ package lane
 
 import (
 	"encoding/json"
+	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/michielvha/auth-refresh/internal/config"
 )
@@ -81,5 +85,60 @@ func TestResultJSONRoundTrip(t *testing.T) {
 	}
 	if !out.OK || out.URL != "about:blank" || out.String() != "hi" || out.Extra["bytes"] != 12.0 {
 		t.Fatalf("round trip: %+v", out)
+	}
+}
+
+func TestProbeWithoutDriver(t *testing.T) {
+	t.Setenv("PLAYWRIGHT_CLI_PATH", "")
+	t.Setenv("PLAYWRIGHT_NODEJS_PATH", "")
+	t.Run("missing driver", func(t *testing.T) {
+		dir := t.TempDir()
+		t.Setenv("PLAYWRIGHT_DRIVER_PATH", dir)
+		_, err := Probe(5*time.Second, nil)
+		if err == nil || !strings.Contains(err.Error(), "not installed") || !strings.Contains(err.Error(), "auth-refresh setup") {
+			t.Fatalf("got %v", err)
+		}
+		if entries, _ := os.ReadDir(dir); len(entries) != 0 {
+			t.Fatalf("a check must not create files, got %v", entries)
+		}
+	})
+	fakeDriver := func(t *testing.T, script string) {
+		t.Helper()
+		dir := t.TempDir()
+		if err := os.MkdirAll(filepath.Join(dir, "package"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "package", "cli.js"), nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		node := filepath.Join(dir, "node")
+		if err := os.WriteFile(node, []byte("#!/bin/sh\n"+script+"\n"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		t.Setenv("PLAYWRIGHT_DRIVER_PATH", dir)
+		t.Setenv("PLAYWRIGHT_NODEJS_PATH", node)
+	}
+	t.Run("a driver of another version is refused", func(t *testing.T) {
+		fakeDriver(t, "echo Version 1.0.0")
+		_, err := Probe(10*time.Second, nil)
+		if err == nil || !strings.Contains(err.Error(), "version not "+DriverVersion()) {
+			t.Fatalf("got %v", err)
+		}
+	})
+	t.Run("a hung driver is bounded", func(t *testing.T) {
+		fakeDriver(t, "sleep 2")
+		start := time.Now()
+		_, err := Probe(300*time.Millisecond, nil)
+		if err == nil || !strings.Contains(err.Error(), "did not start within") || time.Since(start) > 2*time.Second {
+			t.Fatalf("got %v after %s", err, time.Since(start))
+		}
+	})
+}
+
+func TestShortErrDropsTheNpxBanner(t *testing.T) {
+	err := errors.New("BrowserType.launch: Executable doesn't exist at /x/chrome-headless-shell\n╔════╗\n║ Looks like Playwright was just installed or updated. ║\n║ Please run the following command to download new browsers: ║\n║     npx playwright install ║\n╚════╝")
+	got := shortErr(err)
+	if strings.Contains(got, "npx") || !strings.Contains(got, "Executable doesn't exist") {
+		t.Fatalf("got %q", got)
 	}
 }

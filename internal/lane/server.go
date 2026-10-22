@@ -1,18 +1,19 @@
 package lane
 
 import (
+	"bytes"
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
 	"net"
 	"net/http"
-	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -22,14 +23,207 @@ import (
 	"github.com/mxschmitt/playwright-go"
 )
 
-const actionTimeout = 15000.0
+const (
+	actionTimeout = 15000.0
+	peekBudget    = 3 * time.Second
+)
 
-// Install downloads the Playwright driver and the Chromium headless shell into
-// the user cache. withDeps also installs Chromium's system libraries (needs root).
-func Install(withDeps bool) error {
+// Install downloads the pinned Playwright driver (playwright-core plus the
+// Node.js runtime it needs) and the Chromium headless shell into the current
+// user's cache. It installs no system libraries and needs no root.
+func Install() error {
 	return playwright.Install(&playwright.RunOptions{
-		Browsers: []string{"chromium"}, OnlyInstallShell: true, WithDeps: withDeps, Verbose: false,
+		Browsers: []string{"chromium"}, OnlyInstallShell: true, Verbose: false,
 	})
+}
+
+// DriverVersion is the Playwright driver version this binary is pinned to.
+func DriverVersion() string {
+	d, err := playwright.NewDriver(&playwright.RunOptions{Verbose: false})
+	if err != nil {
+		return "unknown"
+	}
+	return d.Version
+}
+
+// DriverDir is where playwright-go looks for the driver: PLAYWRIGHT_DRIVER_PATH,
+// else <user cache>/ms-playwright-go/<version> (~/.cache on Linux, as
+// playwright-go computes it, independent of XDG_CACHE_HOME).
+func DriverDir() (string, error) {
+	if p := os.Getenv("PLAYWRIGHT_DRIVER_PATH"); p != "" {
+		return p, nil
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	base := filepath.Join(home, ".cache")
+	if runtime.GOOS == "darwin" {
+		base = filepath.Join(home, "Library", "Caches")
+	}
+	return filepath.Join(base, "ms-playwright-go", DriverVersion()), nil
+}
+
+// CheckDriver reports whether the pinned driver is on disk, without starting
+// it or creating anything.
+func CheckDriver() (string, error) {
+	dir, err := DriverDir()
+	if err != nil {
+		return "", err
+	}
+	cli := filepath.Join(dir, "package", "cli.js")
+	if p := os.Getenv("PLAYWRIGHT_CLI_PATH"); p != "" {
+		cli = p
+	}
+	if _, err := os.Stat(cli); err != nil {
+		return dir, fmt.Errorf("playwright driver %s is not installed (%s missing): run `auth-refresh setup`", DriverVersion(), cli)
+	}
+	return dir, nil
+}
+
+// Probe starts the pinned driver and launches the headless Chromium once, the
+// same way a lane does, and reports what ran. It gives up after timeout.
+//
+// The attempt runs in a helper subprocess (this executable, re-run with
+// probeHelperEnv set; see RunProbeHelperIfRequested) so that a timeout can end
+// everything it started: the helper, the Node.js driver and every Chromium
+// process, which a goroutine could not guarantee.
+func Probe(timeout time.Duration, chromiumArgs []string) (string, error) {
+	if _, err := CheckDriver(); err != nil {
+		return "", err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	detail, err := probeInHelper(ctx, chromiumArgs)
+	if err != nil && ctx.Err() != nil {
+		return "", fmt.Errorf("playwright driver or chromium did not start within %s", timeout)
+	}
+	return detail, err
+}
+
+const (
+	probeHelperEnv = "AUTH_REFRESH_PROBE_HELPER"
+	probeArgsEnv   = "AUTH_REFRESH_PROBE_ARGS"
+)
+
+type probeResult struct {
+	Detail string `json:"detail"`
+	Error  string `json:"error,omitempty"`
+}
+
+// probeInHelper runs one probe in a helper subprocess in its own process
+// group. When ctx ends first, the helper and all its descendants are killed
+// and reaped before it returns.
+func probeInHelper(ctx context.Context, chromiumArgs []string) (string, error) {
+	exe, err := os.Executable()
+	if err != nil {
+		return "", fmt.Errorf("probe: find own executable: %w", err)
+	}
+	args, err := json.Marshal(chromiumArgs)
+	if err != nil {
+		return "", err
+	}
+	var stdout, stderr bytes.Buffer
+	cmd := exec.Command(exe)
+	cmd.Env = append(os.Environ(), probeHelperEnv+"=1", probeArgsEnv+"="+string(args))
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	cmd.SysProcAttr = helperSysProcAttr()
+	cmd.WaitDelay = 5 * time.Second
+	if err := cmd.Start(); err != nil {
+		return "", fmt.Errorf("probe: start helper: %w", err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- cmd.Wait() }()
+	var waitErr error
+	select {
+	case waitErr = <-done:
+	case <-ctx.Done():
+		killTree(cmd.Process.Pid, true)
+		<-done
+		return "", ctx.Err()
+	}
+	var r probeResult
+	lines := strings.Split(strings.TrimSpace(stdout.String()), "\n")
+	if err := json.Unmarshal([]byte(lines[len(lines)-1]), &r); err != nil {
+		msg := strings.TrimSpace(stderr.String())
+		if len(msg) > 500 {
+			msg = msg[len(msg)-500:]
+		}
+		return "", fmt.Errorf("probe helper failed (%v): %s", waitErr, msg)
+	}
+	if r.Error != "" {
+		return "", errors.New(r.Error)
+	}
+	return r.Detail, nil
+}
+
+// RunProbeHelperIfRequested turns this process into Probe's helper when Probe
+// started it, and then exits; otherwise it returns at once. Call it first in
+// main (and in TestMain of any test binary whose tests reach Probe).
+func RunProbeHelperIfRequested() {
+	if os.Getenv(probeHelperEnv) == "1" {
+		runProbeHelper(nil)
+	}
+}
+
+// runProbeHelper probes and writes the result as one JSON line to stdout.
+// afterLaunch, for tests, runs while the browser is up.
+func runProbeHelper(afterLaunch func()) {
+	becomeSubreaper()
+	var args []string
+	_ = json.Unmarshal([]byte(os.Getenv(probeArgsEnv)), &args)
+	var r probeResult
+	dir, err := CheckDriver()
+	if err == nil {
+		r.Detail, err = probe(dir, args, afterLaunch)
+	}
+	if err != nil {
+		r.Error = err.Error()
+	}
+	killTree(os.Getpid(), false)
+	b, _ := json.Marshal(r)
+	_, _ = os.Stdout.Write(append(b, '\n'))
+	os.Exit(0)
+}
+
+func probe(dir string, chromiumArgs []string, afterLaunch func()) (string, error) {
+	pw, err := playwright.Run(&playwright.RunOptions{Browsers: []string{"chromium"}, Verbose: false})
+	if err != nil {
+		return "", fmt.Errorf("start playwright driver %s from %s: %s", DriverVersion(), dir, shortErr(err))
+	}
+	defer func() { _ = pw.Stop() }()
+	b, err := pw.Chromium.Launch(playwright.BrowserTypeLaunchOptions{Headless: playwright.Bool(true), Args: chromiumArgs})
+	if err != nil {
+		return "", fmt.Errorf("launch chromium headless shell (run `auth-refresh setup`; on a fresh OS install its system libraries, see README): %s", shortErr(err))
+	}
+	v := b.Version()
+	if afterLaunch != nil {
+		afterLaunch()
+	}
+	_ = b.Close()
+	return fmt.Sprintf("driver %s, chromium %s", DriverVersion(), v), nil
+}
+
+// shortErr keeps the informative head of a Playwright error and drops its
+// banner, which advises `npx playwright install`: there is no npx here.
+func shortErr(err error) string {
+	var keep []string
+	for _, l := range strings.Split(err.Error(), "\n") {
+		l = strings.Trim(strings.TrimSpace(l), "║╔╗╚╝═ ")
+		if l == "" || strings.Contains(l, "npx playwright") || strings.Contains(l, "Please run the following command") {
+			continue
+		}
+		keep = append(keep, l)
+		if len(keep) == 4 {
+			break
+		}
+	}
+	msg := strings.Join(keep, " | ")
+	if len(msg) > 500 {
+		msg = msg[:500]
+	}
+	return msg
 }
 
 type server struct {
@@ -42,8 +236,7 @@ type server struct {
 	ctx      playwright.BrowserContext
 	page     playwright.Page
 	mu       sync.Mutex // one action at a time, like a human at the keyboard
-	netMu    sync.Mutex
-	netLog   []map[string]any
+	dialogMu sync.Mutex
 	accept   bool
 	shutdown chan struct{}
 }
@@ -76,6 +269,7 @@ func Serve(ctx context.Context, cfg *config.Config, name, stateDir string, log *
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /ping", s.ping)
+	mux.HandleFunc("GET /peek", s.peek)
 	mux.HandleFunc("POST /cmd", s.cmd)
 	srv := &http.Server{Handler: mux, ReadHeaderTimeout: 5 * time.Second}
 	go func() { _ = srv.Serve(ln) }()
@@ -94,9 +288,12 @@ func Serve(ctx context.Context, cfg *config.Config, name, stateDir string, log *
 }
 
 func (s *server) startBrowser() error {
+	if _, err := CheckDriver(); err != nil {
+		return err
+	}
 	pw, err := playwright.Run(&playwright.RunOptions{Browsers: []string{"chromium"}, Verbose: false})
 	if err != nil {
-		return fmt.Errorf("start playwright (run `auth-refresh setup` first): %w", err)
+		return fmt.Errorf("start playwright (run `auth-refresh doctor`): %w", err)
 	}
 	s.pw = pw
 	b, err := pw.Chromium.Launch(playwright.BrowserTypeLaunchOptions{
@@ -110,7 +307,6 @@ func (s *server) startBrowser() error {
 	s.browser = b
 	opts := playwright.BrowserNewContextOptions{
 		IgnoreHttpsErrors: playwright.Bool(s.cfg.Browser.IgnoreHTTPSErrors),
-		AcceptDownloads:   playwright.Bool(true),
 	}
 	if s.cfg.Browser.Locale != "" {
 		opts.Locale = playwright.String(s.cfg.Browser.Locale)
@@ -133,20 +329,16 @@ func (s *server) startBrowser() error {
 	// With a listener present Playwright no longer auto-dismisses dialogs, so
 	// dismiss unless `acceptnext` armed exactly one accept.
 	page.OnDialog(func(d playwright.Dialog) {
-		s.netMu.Lock()
+		s.dialogMu.Lock()
 		accept := s.accept
 		s.accept = false
-		s.netMu.Unlock()
+		s.dialogMu.Unlock()
 		if accept {
 			_ = d.Accept()
 		} else {
 			_ = d.Dismiss()
 		}
 	})
-	if s.cfg.Browser.CaptureSAMLAssertions {
-		page.OnRequest(s.captureSAML)
-	}
-	bctx.OnResponse(s.recordResponse)
 	return nil
 }
 
@@ -159,63 +351,55 @@ func (s *server) stopBrowser() {
 	}
 }
 
-var samlRe = regexp.MustCompile(`SAMLResponse=([^&]+)`)
-
-// captureSAML writes decoded assertions to out/. Off by default: an assertion is a bearer credential.
-func (s *server) captureSAML(r playwright.Request) {
-	if r.Method() != http.MethodPost || !strings.Contains(strings.ToLower(r.URL()), "sso") {
-		return
-	}
-	body, err := r.PostData()
-	if err != nil {
-		return
-	}
-	m := samlRe.FindStringSubmatch(body)
-	if m == nil {
-		return
-	}
-	enc, err := url.QueryUnescape(m[1])
-	if err != nil {
-		return
-	}
-	xml, err := base64.StdEncoding.DecodeString(enc)
-	if err != nil {
-		return
-	}
-	name := fmt.Sprintf("assertion-%d.xml", time.Now().UnixMilli())
-	_ = os.WriteFile(filepath.Join(s.paths.Out, name), xml, 0o600)
-}
-
-var apiRe = regexp.MustCompile(`(?i)api|graphql`)
-
-func (s *server) recordResponse(r playwright.Response) {
-	rt := r.Request().ResourceType()
-	if rt != "xhr" && rt != "fetch" && r.Status() < 400 {
-		return
-	}
-	u := r.URL()
-	if len(u) > 200 {
-		u = u[:200]
-	}
-	e := map[string]any{"status": r.Status(), "method": r.Request().Method(), "url": u}
-	if s.cfg.Browser.NetlogBodies && (r.Status() >= 400 || apiRe.MatchString(r.URL())) {
-		if t, err := r.Text(); err == nil {
-			if len(t) > 60000 {
-				t = t[:60000]
-			}
-			e["body"] = t
-		}
-	}
-	s.netMu.Lock()
-	s.netLog = append(s.netLog, e)
-	if len(s.netLog) > 100 {
-		s.netLog = s.netLog[1:]
-	}
-	s.netMu.Unlock()
-}
-
 func (s *server) ping(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, map[string]any{"lane": s.name, "pid": os.Getpid(), "account": s.cfg.Lanes[s.name].Account})
+}
+
+// peek deliberately skips s.mu: it must answer while a long action (waiturl,
+// a click that waits) holds the page, and it only reads.
+func (s *server) peek(w http.ResponseWriter, _ *http.Request) {
+	p := Peek{URL: s.page.URL()}
+	if p.URL != "about:blank" {
+		t, err := textWithin(s.page, peekBudget)
+		if err != nil {
+			p.Error = firstLine(err.Error(), 200)
+		} else {
+			p.Challenge = OnChallenge(s.cfg.MFA.ChallengeRegex, t)
+		}
+	}
+	writeJSON(w, p)
+}
+
+// textWithin reads the page text once, giving up after d: a busy or hung page
+// must not stall a status report. It never waits for or causes a navigation.
+func textWithin(p playwright.Page, d time.Duration) (string, error) {
+	type result struct {
+		text string
+		err  error
+	}
+	ch := make(chan result, 1)
+	go func() {
+		v, err := p.Evaluate(`() => document.body ? document.body.innerText : ''`)
+		t, _ := v.(string)
+		ch <- result{t, err}
+	}()
+	select {
+	case r := <-ch:
+		return r.text, r.err
+	case <-time.After(d):
+		return "", fmt.Errorf("page text unreadable: no answer within %s (page busy or navigating)", d)
+	}
+}
+
+func firstLine(s string, n int) string {
+	s = strings.TrimSpace(s)
+	if i := strings.IndexByte(s, '\n'); i >= 0 {
+		s = s[:i]
+	}
+	if len(s) > n {
+		s = s[:n]
+	}
+	return s
 }
 
 func (s *server) cmd(w http.ResponseWriter, r *http.Request) {
@@ -286,9 +470,9 @@ func (s *server) act(c Command, out map[string]any) error {
 		out["selected"] = sel
 		return err
 	case "acceptnext":
-		s.netMu.Lock()
+		s.dialogMu.Lock()
 		s.accept = true
-		s.netMu.Unlock()
+		s.dialogMu.Unlock()
 		out["armed"] = true
 		return nil
 	case "wait":
@@ -333,20 +517,6 @@ func (s *server) act(c Command, out map[string]any) error {
 		v, err := p.Evaluate(controlsJS)
 		out["controls"] = v
 		return err
-	case "labels":
-		v, err := p.Evaluate(`() => Array.from(document.querySelectorAll('label')).map(l => ({for: l.htmlFor, text: (l.innerText||'').trim().slice(0,80)}))`)
-		out["labels"] = v
-		return err
-	case "netdump":
-		f, err := SafeOutFile(s.paths.Out, c.File, "net.json")
-		if err != nil {
-			return err
-		}
-		s.netMu.Lock()
-		b, _ := json.MarshalIndent(s.netLog, "", " ")
-		out["count"] = len(s.netLog)
-		s.netMu.Unlock()
-		return os.WriteFile(f, b, 0o600)
 	case "shot":
 		f, err := SafeOutFile(s.paths.Out, c.File, "shot.png")
 		if err != nil {
@@ -358,60 +528,44 @@ func (s *server) act(c Command, out map[string]any) error {
 		return err
 	case "state":
 		return s.saveState(c, out)
-	case "download":
-		dl, err := p.ExpectDownload(func() error {
-			switch {
-			case c.Selector != "":
-				return first().Click()
-			case c.Click != "":
-				return p.GetByText(c.Click).First().Click()
-			}
-			return nil
-		}, playwright.PageExpectDownloadOptions{Timeout: ms(c.MS, 30000)})
-		if err != nil {
-			return err
-		}
-		dest := c.Path
-		if dest == "" {
-			if dest, err = SafeOutFile(s.paths.Out, dl.SuggestedFilename(), "download"); err != nil {
-				return err
-			}
-		}
-		if err := dl.SaveAs(dest); err != nil {
-			return err
-		}
-		out["path"], out["filename"] = dest, dl.SuggestedFilename()
-		if st, err := os.Stat(dest); err == nil {
-			out["bytes"] = st.Size()
-		}
-		return nil
-	case "upload":
-		if c.Chooser {
-			fc, err := p.ExpectFileChooser(func() error { return first().Click() })
-			if err != nil {
-				return err
-			}
-			return fc.SetFiles(c.Files)
-		}
-		return first().SetInputFiles(c.Files)
 	case "press":
 		return p.Keyboard().Press(c.Key)
-	case "typelines":
-		for _, l := range c.Lines {
-			if l != "" {
-				if err := p.Keyboard().InsertText(l); err != nil {
-					return err
-				}
-			}
-			if err := p.Keyboard().Press("Enter"); err != nil {
-				return err
-			}
-		}
-		return nil
+	case "whoami":
+		return s.whoami(out)
 	case "quit":
 		return nil
 	}
 	return fmt.Errorf("unknown action %q", c.Action)
+}
+
+// whoami asks the IdP who this lane's cookies belong to, in a throwaway page of
+// the same context, so the lane's own page is never navigated. It still
+// refuses unless the lane page is parked: a probe in the middle of a login can
+// race the IdP's own redirects and cookie updates.
+func (s *server) whoami(out map[string]any) error {
+	if u := s.page.URL(); u != "about:blank" {
+		return fmt.Errorf("REFUSED: lane page is on %s, a login may be in progress; finish it (waiturl, then state), park the lane, then whoami", u)
+	}
+	if s.cfg.IdP.OrgURL == "" {
+		return errors.New("idp.org_url is not configured")
+	}
+	pg, err := s.ctx.NewPage()
+	if err != nil {
+		return fmt.Errorf("probe page: %w", err)
+	}
+	defer func() { _ = pg.Close() }()
+	if _, err := pg.Goto(s.cfg.IdP.OrgURL+s.cfg.IdP.WhoamiPath, playwright.PageGotoOptions{
+		Timeout: playwright.Float(30000), WaitUntil: playwright.WaitUntilStateDomcontentloaded,
+	}); err != nil {
+		return err
+	}
+	t, err := bodyText(pg)
+	if err != nil {
+		return err
+	}
+	w := ParseWhoami(t)
+	out["live"], out["login"], out["last_login"], out["reason"] = w.Live, w.Login, w.LastLogin, w.Reason
+	return nil
 }
 
 // fillcred fills a credential without it ever reaching a log, a reply or a shell.

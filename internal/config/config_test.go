@@ -73,3 +73,28 @@ func TestParseRejectsUnknownFields(t *testing.T) {
 		t.Fatalf("a typo must fail loudly, got %v", err)
 	}
 }
+
+func TestRemovedBrowserKeysNameTheFix(t *testing.T) {
+	_, err := Parse([]byte(`{"browser":{"locale":"en-US","capture_saml_assertions":false,"netlog_bodies":true}}`), "t")
+	if err == nil {
+		t.Fatal("want an error")
+	}
+	for _, want := range []string{"browser.capture_saml_assertions was removed", "browser.netlog_bodies was removed", "delete the key"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("missing %q in %v", want, err)
+		}
+	}
+}
+
+func TestStartURLValidation(t *testing.T) {
+	for _, bad := range []string{"d-1.awsapps.com/start", "http://d-1.awsapps.com/start", "https://"} {
+		raw := `{"identities":[{"name":"aws","type":"aws_sso","sso_session":"s","start_url":"` + bad + `"}]}`
+		if _, err := Parse([]byte(raw), "t"); err == nil || !strings.Contains(err.Error(), "start_url") {
+			t.Errorf("%q: want a start_url error, got %v", bad, err)
+		}
+	}
+	ok := `{"identities":[{"name":"aws","type":"aws_sso","sso_session":"s","start_url":"https://d-1.awsapps.com/start/#"}]}`
+	if _, err := Parse([]byte(ok), "t"); err != nil {
+		t.Fatal(err)
+	}
+}

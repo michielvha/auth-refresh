@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -48,12 +49,14 @@ type MFA struct {
 
 // Browser tunes the headless Chromium every lane runs.
 type Browser struct {
-	ChromiumArgs          []string `json:"chromium_args"`
-	IgnoreHTTPSErrors     bool     `json:"ignore_https_errors"`
-	Locale                string   `json:"locale"`
-	CaptureSAMLAssertions bool     `json:"capture_saml_assertions"`
-	NetlogBodies          bool     `json:"netlog_bodies"`
+	ChromiumArgs      []string `json:"chromium_args"`
+	IgnoreHTTPSErrors bool     `json:"ignore_https_errors"`
+	Locale            string   `json:"locale"`
 }
+
+// removedBrowserKeys were debugging aids of the first version. They are named
+// in the error so an old config is fixed by deleting the key, not by guessing.
+var removedBrowserKeys = []string{"capture_saml_assertions", "netlog_bodies"}
 
 // Lane is one human account with its own browser and cookie jar.
 type Lane struct {
@@ -152,6 +155,9 @@ func Parse(raw []byte, source string) (*Config, error) {
 			delete(top, k)
 		}
 	}
+	if err := checkRemovedKeys(top); err != nil {
+		return nil, fmt.Errorf("config %s: %w", source, err)
+	}
 	clean, err := json.Marshal(top)
 	if err != nil {
 		return nil, fmt.Errorf("parse config %s: %w", source, err)
@@ -167,6 +173,24 @@ func Parse(raw []byte, source string) (*Config, error) {
 		return nil, fmt.Errorf("config %s: %w", source, err)
 	}
 	return &c, nil
+}
+
+func checkRemovedKeys(top map[string]json.RawMessage) error {
+	raw, ok := top["browser"]
+	if !ok {
+		return nil
+	}
+	var b map[string]json.RawMessage
+	if json.Unmarshal(raw, &b) != nil {
+		return nil // the strict decode reports the real type error
+	}
+	var errs []error
+	for _, k := range removedBrowserKeys {
+		if _, ok := b[k]; ok {
+			errs = append(errs, fmt.Errorf("browser.%s was removed (the feature no longer exists): delete the key", k))
+		}
+	}
+	return errors.Join(errs...)
 }
 
 func (c *Config) applyDefaults() {
@@ -238,6 +262,11 @@ func (c *Config) Validate() error {
 		for _, f := range fields {
 			if fieldValue(id, f) == "" {
 				errs = append(errs, fmt.Errorf("%s: type %s needs %s", where, id.Type, f))
+			}
+		}
+		if id.StartURL != "" {
+			if u, err := url.Parse(id.StartURL); err != nil || u.Scheme != "https" || u.Host == "" {
+				errs = append(errs, fmt.Errorf("%s: start_url %q must be an https URL, as in the AWS config's sso_start_url", where, id.StartURL))
 			}
 		}
 	}

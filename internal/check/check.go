@@ -5,8 +5,10 @@ package check
 import (
 	"bytes"
 	"context"
+	"crypto/sha1" //nolint:gosec // the AWS CLI names its SSO cache files by SHA-1
 	"crypto/tls"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -48,9 +50,22 @@ type Result struct {
 // Bad reports whether the identity needs action.
 func (r Result) Bad() bool { return r.Status == Dead || r.Status == Missing }
 
-// Runner runs an external command and returns its exit code and combined output.
-// On timeout it returns the output gathered so far and exit code 124.
-type Runner func(ctx context.Context, env []string, name string, args ...string) (int, string)
+// Output is what a command printed and how it exited. Stdout and stderr stay
+// apart so that warnings on stderr never spoil machine-readable stdout.
+type Output struct {
+	Code   int
+	Stdout string
+	Stderr string
+}
+
+// Combined returns stdout and stderr together, for error messages.
+func (o Output) Combined() string {
+	return strings.TrimSpace(strings.TrimSpace(o.Stdout) + "\n" + strings.TrimSpace(o.Stderr))
+}
+
+// Runner runs an external command. On timeout it returns the output gathered
+// so far and exit code 124; a command that cannot start gets exit code 127.
+type Runner func(ctx context.Context, env []string, name string, args ...string) Output
 
 // Deps are the side effects a checker may use.
 type Deps struct {
@@ -70,29 +85,30 @@ func DefaultDeps() Deps {
 // ExecRunner is the production Runner. Each command gets its own process group
 // and a timeout kills the whole group: kubectl's exec plugin (kubelogin -> az)
 // otherwise outlives it, stuck on az's interactive fallback forever.
-func ExecRunner(ctx context.Context, env []string, name string, args ...string) (int, string) {
+func ExecRunner(ctx context.Context, env []string, name string, args ...string) Output {
 	cmd := exec.CommandContext(ctx, name, args...)
 	cmd.Env = append(os.Environ(), env...)
 	cmd.Stdin = nil
-	var buf bytes.Buffer
-	cmd.Stdout, cmd.Stderr = &buf, &buf
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	cmd.Cancel = func() error { return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) }
 	cmd.WaitDelay = 2 * time.Second
 	err := cmd.Run()
-	out := strings.TrimSpace(buf.String())
+	o := Output{Stdout: strings.TrimSpace(stdout.String()), Stderr: strings.TrimSpace(stderr.String())}
 	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
-		return 124, out
+		o.Code = 124
+		return o
 	}
 	var ee *exec.ExitError
 	switch {
 	case err == nil:
-		return 0, out
 	case errors.As(err, &ee):
-		return ee.ExitCode(), out
+		o.Code = ee.ExitCode()
 	default:
-		return 127, err.Error()
+		o.Code, o.Stderr = 127, err.Error()
 	}
+	return o
 }
 
 func httpClient(verify bool) *http.Client {
@@ -161,14 +177,19 @@ func One(ctx context.Context, id config.Identity, d Deps) Result {
 	default:
 		st, detail = Warn, "unknown type "+id.Type
 	}
-	fix := id.Fix
-	if fix == "" && id.Lane != "" {
-		fix = "start " + id.Name
+	r := Result{Name: id.Name, Status: st, Detail: detail, Lane: id.Lane}
+	// A fix is only offered for an identity that is actually dead: a WARN
+	// (RBAC, outage, timeout) must never send anyone into a login.
+	if r.Bad() {
+		r.Fix = id.Fix
+		if r.Fix == "" && id.Lane != "" {
+			r.Fix = "start " + id.Name
+		}
 	}
-	return Result{Name: id.Name, Status: st, Detail: detail, Lane: id.Lane, Fix: fix}
+	return r
 }
 
-func runT(ctx context.Context, d Deps, timeout time.Duration, env []string, name string, args ...string) (int, string) {
+func runT(ctx context.Context, d Deps, timeout time.Duration, env []string, name string, args ...string) Output {
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	return d.Run(ctx, env, name, args...)
@@ -198,7 +219,8 @@ func azure(ctx context.Context, id config.Identity, d Deps) (Status, string) {
 	}
 	// On an expired refresh token newer az does not exit: it falls back to an
 	// interactive browser login and blocks. So bound it and read the AADSTS code.
-	rc, out := runT(ctx, d, 25*time.Second, nil, "az", args...)
+	o := runT(ctx, d, 25*time.Second, nil, "az", args...)
+	rc, out := o.Code, o.Combined()
 	if rc != 0 {
 		why := aadstsRe.FindString(out)
 		if why == "" {
@@ -209,51 +231,81 @@ func azure(ctx context.Context, id config.Identity, d Deps) (Status, string) {
 		}
 		return Dead, fmt.Sprintf("needs `start %s` (last login %s): %s", id.Name, last, why)
 	}
-	return OK, fmt.Sprintf("access token until %s (last login %s)", lastLine(out, 40), last)
+	return OK, fmt.Sprintf("access token until %s (last login %s)", lastLine(o.Stdout, 40), last)
 }
 
+// ssoCacheFile is where the AWS CLI caches the token of an sso-session:
+// ~/.aws/sso/cache/<sha1 of the session name>.json (botocore SSOTokenLoader).
+func ssoCacheFile(home, session string) string {
+	sum := sha1.Sum([]byte(session)) //nolint:gosec // the AWS CLI's cache key, not a security use
+	return filepath.Join(home, ".aws", "sso", "cache", hex.EncodeToString(sum[:])+".json")
+}
+
+func normStartURL(u string) string { return strings.TrimRight(strings.TrimSpace(u), "/#") }
+
+// ssoToken reads the cached token of id's sso-session. alive is false with a
+// reason for a missing, malformed, foreign or expired token.
+func ssoToken(id config.Identity, d Deps) (alive bool, detail string) {
+	file := ssoCacheFile(d.Home, id.SSOSession)
+	raw, err := os.ReadFile(file)
+	if errors.Is(err, os.ErrNotExist) {
+		return false, fmt.Sprintf("no SSO token cached for sso_session %s", id.SSOSession)
+	}
+	if err != nil {
+		return false, fmt.Sprintf("cannot read SSO cache %s: %v", filepath.Base(file), err)
+	}
+	var c struct {
+		AccessToken string `json:"accessToken"`
+		StartURL    string `json:"startUrl"`
+		ExpiresAt   string `json:"expiresAt"`
+	}
+	if err := json.Unmarshal(raw, &c); err != nil {
+		return false, fmt.Sprintf("SSO cache %s is malformed: %v", filepath.Base(file), err)
+	}
+	if c.AccessToken == "" || c.ExpiresAt == "" {
+		return false, fmt.Sprintf("SSO cache %s has no accessToken/expiresAt", filepath.Base(file))
+	}
+	if id.StartURL != "" && normStartURL(c.StartURL) != normStartURL(id.StartURL) {
+		return false, fmt.Sprintf("SSO cache for sso_session %s is for start URL %s, config says %s", id.SSOSession, c.StartURL, id.StartURL)
+	}
+	left, alive := until(c.ExpiresAt, d.Now())
+	if !alive && left != "expired" {
+		return false, fmt.Sprintf("SSO cache %s has an unreadable expiresAt %q", filepath.Base(file), c.ExpiresAt)
+	}
+	return alive, "SSO token " + left
+}
+
+var (
+	awsAuthRe = regexp.MustCompile(`(?i)token (?:has )?expired|expiredtoken|error loading sso token|sso session .*(?:expired|invalid)|unauthorizedssotoken|invalid_grant|invalidgrant|refresh failed|aws sso login`)
+	awsNetRe  = regexp.MustCompile(`(?i)could not connect to the endpoint|connect timeout|read timeout|connection (?:refused|reset)|name resolution|temporary failure|max retries exceeded|serviceunavailable|throttl`)
+)
+
 func awsSSO(ctx context.Context, id config.Identity, d Deps) (Status, string) {
-	var best string
-	files, _ := filepath.Glob(filepath.Join(d.Home, ".aws", "sso", "cache", "*.json"))
-	for _, f := range files {
-		raw, err := os.ReadFile(f)
-		if err != nil {
-			continue
-		}
-		var c struct {
-			AccessToken string `json:"accessToken"`
-			StartURL    string `json:"startUrl"`
-			ExpiresAt   string `json:"expiresAt"`
-		}
-		if json.Unmarshal(raw, &c) != nil || c.AccessToken == "" {
-			continue
-		}
-		if id.StartURL != "" && c.StartURL != id.StartURL {
-			continue
-		}
-		if c.ExpiresAt > best {
-			best = c.ExpiresAt
-		}
-	}
-	sso := "no SSO token cached"
-	alive := false
-	if best != "" {
-		var left string
-		left, alive = until(best, d.Now())
-		sso = "SSO token " + left
-	}
 	if id.ProbeProfile == "" {
+		alive, sso := ssoToken(id, d)
 		if alive {
 			return OK, sso
 		}
 		return Dead, sso
 	}
-	rc, out := runT(ctx, d, 25*time.Second, nil, "aws", "sts", "get-caller-identity",
+	// The probe first: a successful call may refresh the cached token.
+	o := runT(ctx, d, 25*time.Second, nil, "aws", "sts", "get-caller-identity",
 		"--profile", id.ProbeProfile, "--query", "Arn", "--output", "text")
-	if rc == 0 {
-		return OK, fmt.Sprintf("%s -> %s; %s", id.ProbeProfile, lastLine(out, 120), sso)
+	alive, sso := ssoToken(id, d)
+	if o.Code == 0 {
+		return OK, fmt.Sprintf("%s -> %s; %s", id.ProbeProfile, lastLine(o.Stdout, 120), sso)
 	}
-	return Dead, fmt.Sprintf("%s: %s; %s", id.ProbeProfile, lastLine(out, 90), sso)
+	why := lastLine(o.Combined(), 90)
+	if o.Code == 124 {
+		why = "timed out"
+	}
+	switch {
+	case !alive || awsAuthRe.MatchString(o.Combined()):
+		return Dead, fmt.Sprintf("%s: %s; %s", id.ProbeProfile, why, sso)
+	case o.Code == 124 || awsNetRe.MatchString(o.Combined()):
+		return Warn, fmt.Sprintf("%s unreachable, not an auth failure: %s; %s", id.ProbeProfile, why, sso)
+	}
+	return Warn, fmt.Sprintf("%s probe failed, not recognised as an auth failure: %s; %s", id.ProbeProfile, why, sso)
 }
 
 func until(iso string, now time.Time) (string, bool) {
@@ -271,50 +323,166 @@ func until(iso string, now time.Time) (string, bool) {
 	return iso, false
 }
 
+// Order matters: kubectl wraps a failed credential plugin in "Unable to connect
+// to the server", so auth is matched before network; an expired *server*
+// certificate (x509) is not a login problem, so it is matched first.
+var (
+	kubeTLSRe         = regexp.MustCompile(`(?i)x509:|certificate (?:has expired|signed by unknown)`)
+	kubeAuthRe        = regexp.MustCompile(`(?i)\(unauthorized\)|\bunauthorized\b|must be logged in|asked for the client to provide credentials|getting credentials|exec plugin|executable \S+ failed|AADSTS\d+|invalid_grant|token (?:has )?expired|expired token|sso token|refresh token`)
+	kubeForbiddenRe   = regexp.MustCompile(`(?i)\(forbidden\)|\bis forbidden\b`)
+	kubeUnsupportedRe = regexp.MustCompile(`(?i)unknown command "whoami"|doesn't have a resource type|could not find the requested resource|\(notfound\)`)
+	kubeNetRe         = regexp.MustCompile(`(?i)unable to connect to the server|dial tcp|i/o timeout|no such host|connection refused|connection reset|tls handshake timeout|context deadline exceeded|serviceunavailable|service unavailable|internalerror|internal error|bad gateway|gateway timeout|currently unable to handle`)
+)
+
+// kube asks the API server who the context authenticates as (SelfSubjectReview,
+// GA since Kubernetes 1.28). Only an authentication failure is DEAD; RBAC,
+// outages and an unsupported probe are WARN and never trigger a login.
 func kube(ctx context.Context, id config.Identity, d Deps) (Status, string) {
 	var env []string
 	if id.AWSProfile != "" {
 		env = []string{"AWS_PROFILE=" + id.AWSProfile}
 	}
-	rc, out := runT(ctx, d, 45*time.Second, env, "kubectl", "--context", id.Context,
-		"get", "ns", "-o", "name", "--request-timeout=30s")
-	if rc == 0 && strings.HasPrefix(out, "namespace/") {
+	o := runT(ctx, d, 45*time.Second, env, "kubectl", "--context", id.Context,
+		"auth", "whoami", "-o", "json", "--request-timeout=30s")
+	if o.Code == 0 {
+		var r struct {
+			Status struct {
+				UserInfo struct {
+					Username string `json:"username"`
+				} `json:"userInfo"`
+			} `json:"status"`
+		}
+		if json.Unmarshal([]byte(o.Stdout), &r) == nil && r.Status.UserInfo.Username != "" {
+			return OK, fmt.Sprintf("context %s as %s", id.Context, r.Status.UserInfo.Username)
+		}
 		return OK, "context " + id.Context
 	}
 	rides := id.RidesOn
 	if rides == "" {
 		rides = "?"
 	}
-	why := strings.SplitN(out, "\n", 2)[0]
-	if rc == 124 {
-		why = "timed out"
+	all := o.Combined()
+	why := firstErrorLine(all, 100)
+	switch {
+	case o.Code == 124:
+		return Warn, fmt.Sprintf("context %s: timed out, network or a credential plugin waiting for input; check %s", id.Context, rides)
+	case kubeTLSRe.MatchString(all):
+		return Warn, fmt.Sprintf("context %s: TLS problem, not a login: %s", id.Context, why)
+	case kubeAuthRe.MatchString(all):
+		return Dead, fmt.Sprintf("context %s: %s (rides on %s)", id.Context, why, rides)
+	case kubeForbiddenRe.MatchString(all):
+		return Warn, fmt.Sprintf("context %s: authenticated, but RBAC forbids the probe; not a login: %s", id.Context, why)
+	case kubeUnsupportedRe.MatchString(all):
+		return Warn, fmt.Sprintf("context %s: cannot tell, `kubectl auth whoami` needs kubectl and cluster >= 1.28: %s", id.Context, why)
+	case kubeNetRe.MatchString(all):
+		return Warn, fmt.Sprintf("context %s: unreachable, not an auth failure: %s", id.Context, why)
 	}
-	if len(why) > 100 {
-		why = why[:100]
-	}
-	return Dead, fmt.Sprintf("context %s: %s (rides on %s)", id.Context, why, rides)
+	return Warn, fmt.Sprintf("context %s: probe failed, not recognised as an auth failure: %s", id.Context, why)
 }
 
+// firstErrorLine prefers a line that looks like an error over leading warnings.
+func firstErrorLine(s string, n int) string {
+	lines := strings.Split(strings.TrimSpace(s), "\n")
+	pick := lines[0]
+	for _, l := range lines {
+		if ll := strings.ToLower(l); strings.HasPrefix(ll, "error") || strings.HasPrefix(ll, "unable") || strings.Contains(ll, "error from server") {
+			pick = l
+			break
+		}
+	}
+	pick = strings.TrimSpace(pick)
+	if len(pick) > n {
+		pick = pick[:n]
+	}
+	return pick
+}
+
+type ghEntry struct {
+	State  string `json:"state"`
+	Error  string `json:"error"`
+	Active bool   `json:"active"`
+	Host   string `json:"host"`
+	Login  string `json:"login"`
+}
+
+// gh prefers `gh auth status --json hosts` (newer gh; it exits 0 regardless of
+// auth problems, so the per-account state decides) and falls back to matching
+// one exact success line when an older gh has no --json.
 func gh(ctx context.Context, id config.Identity, d Deps) (Status, string) {
-	rc, out := runT(ctx, d, 20*time.Second, nil, "gh", "auth", "status", "-h", id.Host)
-	if id.Account != "" {
-		if strings.Contains(out, "account "+id.Account) {
-			return OK, id.Account
+	o := runT(ctx, d, 20*time.Second, nil, "gh", "auth", "status", "--json", "hosts", "--hostname", id.Host)
+	if o.Code == 124 {
+		return Warn, "gh auth status timed out, not an auth failure"
+	}
+	var js struct {
+		Hosts map[string][]ghEntry `json:"hosts"`
+	}
+	if json.Unmarshal([]byte(o.Stdout), &js) == nil && js.Hosts != nil {
+		return ghFromJSON(id, js.Hosts[id.Host])
+	}
+	o = runT(ctx, d, 20*time.Second, nil, "gh", "auth", "status", "--hostname", id.Host)
+	if o.Code == 124 {
+		return Warn, "gh auth status timed out, not an auth failure"
+	}
+	return ghFromText(id, o)
+}
+
+func ghFromJSON(id config.Identity, entries []ghEntry) (Status, string) {
+	var e *ghEntry
+	for i := range entries {
+		if (id.Account != "" && entries[i].Login == id.Account) || (id.Account == "" && entries[i].Active) {
+			e = &entries[i]
+			break
+		}
+	}
+	if e == nil {
+		if id.Account == "" {
+			return Dead, "not logged in on " + id.Host
 		}
 		return Dead, fmt.Sprintf("%s not logged in on %s", id.Account, id.Host)
 	}
-	if rc == 0 {
+	who := e.Login
+	if who == "" {
+		who = "token"
+	}
+	switch e.State {
+	case "success":
+		if !e.Active {
+			return OK, who + " (logged in, not the active account)"
+		}
+		return OK, who
+	case "timeout":
+		return Warn, fmt.Sprintf("%s on %s: timed out, not an auth failure", who, id.Host)
+	}
+	return Dead, fmt.Sprintf("%s on %s: %s", who, id.Host, lastLine(strings.SplitN(e.Error, "\n", 2)[0], 90))
+}
+
+func ghFromText(id config.Identity, o Output) (Status, string) {
+	all := o.Combined()
+	host := regexp.QuoteMeta(id.Host)
+	acct := `\S+`
+	if id.Account != "" {
+		acct = regexp.QuoteMeta(id.Account)
+	}
+	// gh >= 2.40: "✓ Logged in to HOST account LOGIN (source)"; older: "... as LOGIN (source)".
+	okRe := regexp.MustCompile(`(?m)^\s*✓ Logged in to ` + host + ` (?:account|as) ` + acct + ` \(`)
+	if okRe.MatchString(all) {
+		if id.Account != "" {
+			return OK, id.Account
+		}
 		return OK, "logged in on " + id.Host
 	}
-	return Dead, lastLine(out, 90)
+	if id.Account == "" {
+		return Dead, lastLine(all, 90)
+	}
+	return Dead, fmt.Sprintf("%s not logged in on %s", id.Account, id.Host)
 }
 
 func docker(ctx context.Context, id config.Identity, d Deps) (Status, string) {
-	rc, out := runT(ctx, d, 30*time.Second, nil, "docker", "manifest", "inspect", id.ProbeImage)
-	if rc == 0 {
+	o := runT(ctx, d, 30*time.Second, nil, "docker", "manifest", "inspect", id.ProbeImage)
+	if o.Code == 0 {
 		return OK, strings.SplitN(id.ProbeImage, "/", 2)[0]
 	}
-	return Dead, lastLine(out, 100)
+	return Dead, lastLine(o.Combined(), 100)
 }
 
 func httpToken(ctx context.Context, id config.Identity, d Deps) (Status, string) {

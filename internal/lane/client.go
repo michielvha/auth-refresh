@@ -206,8 +206,9 @@ func (c *Client) Park(ctx context.Context, name string) (Result, error) {
 	return c.Send(ctx, name, Command{Action: "goto", URL: "about:blank"})
 }
 
-// Whoami asks the IdP who the lane's session belongs to. It sends no push.
-// It navigates away, so never call it while a challenge is being relayed.
+// Whoami asks the IdP who the lane's session belongs to. It sends no push and
+// never navigates the lane's page: the driver probes in a throwaway page, and
+// refuses outright unless the lane is parked on about:blank.
 func (c *Client) Whoami(ctx context.Context, name string) (Who, error) {
 	if c.Cfg.IdP.OrgURL == "" {
 		return Who{}, errors.New("idp.org_url is not configured")
@@ -215,27 +216,38 @@ func (c *Client) Whoami(ctx context.Context, name string) (Who, error) {
 	if _, err := c.Ping(ctx, name); err != nil {
 		return Who{}, ErrNotRunning
 	}
-	p := PathsFor(c.StateDir, name)
-	file := filepath.Join(p.Out, "whoami.json")
-	_ = os.Remove(file)
-	if _, err := c.Send(ctx, name, Command{Action: "goto", URL: c.Cfg.IdP.OrgURL + c.Cfg.IdP.WhoamiPath}); err != nil {
-		return Who{}, err
-	}
-	// textfull, not text: `text` caps at 3000 chars and a full profile can exceed it.
-	r, err := c.Send(ctx, name, Command{Action: "textfull", File: "whoami.json"})
-	_, _ = c.Park(ctx, name)
+	r, err := c.Send(ctx, name, Command{Action: "whoami"})
 	if err != nil {
 		return Who{}, err
 	}
 	if !r.OK {
-		return Who{Reason: r.Error}, nil
+		return Who{}, errors.New(r.Error)
 	}
-	b, err := os.ReadFile(file)
+	w := Who{}
+	w.Live, _ = r.Extra["live"].(bool)
+	w.Login, _ = r.Extra["login"].(string)
+	w.LastLogin, _ = r.Extra["last_login"].(string)
+	w.Reason, _ = r.Extra["reason"].(string)
+	return w, nil
+}
+
+// Peek reads the lane page's URL and challenge state without touching it.
+func (c *Client) Peek(ctx context.Context, name string) (Peek, error) {
+	p, err := c.check(name)
 	if err != nil {
-		return Who{Reason: "no reply"}, nil
+		return Peek{}, err
 	}
-	_ = os.Remove(file)
-	return ParseWhoami(string(b)), nil
+	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, "http://lane/peek", nil)
+	resp, err := httpOver(p.Socket, peekBudget+5*time.Second).Do(req)
+	if err != nil {
+		return Peek{}, fmt.Errorf("peek %s: %w", name, err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	var pk Peek
+	if err := json.NewDecoder(resp.Body).Decode(&pk); err != nil {
+		return Peek{}, fmt.Errorf("peek %s: %w", name, err)
+	}
+	return pk, nil
 }
 
 // PageText returns the visible text of the lane's page.
@@ -290,12 +302,14 @@ type LaneStatus struct {
 	Expects   string `json:"expects"`
 	PID       int    `json:"pid,omitempty"`
 	Session   string `json:"session"`
-	Who       string `json:"who"`
+	Page      string `json:"page,omitempty"`
 	Challenge bool   `json:"on_challenge"`
+	PageError string `json:"page_error,omitempty"`
 }
 
-// Status reports every lane. It never probes a lane that sits on a challenge,
-// because the probe navigates away and would kill the push being relayed.
+// Status reports every lane passively: pid, saved session and what the page
+// shows. It never navigates, never asks the IdP and never waits on the page,
+// so it is safe to run at any point of a login, including a live MFA push.
 func (c *Client) Status(ctx context.Context) []LaneStatus {
 	var rows []LaneStatus
 	for _, name := range c.Cfg.LaneNames() {
@@ -304,21 +318,12 @@ func (c *Client) Status(ctx context.Context) []LaneStatus {
 		if st, err := os.Stat(p.Session); err == nil {
 			row.Session = fmt.Sprintf("saved %s, %d bytes", st.ModTime().Format("2006-01-02 15:04"), st.Size())
 		}
-		info, err := c.Ping(ctx, name)
-		switch {
-		case err != nil:
-			row.Who = "stopped, cannot probe"
-		default:
+		if info, err := c.Ping(ctx, name); err == nil {
 			row.PID = info.PID
-			if t, err := c.PageText(ctx, name); err == nil && OnChallenge(c.Cfg.MFA.ChallengeRegex, t) {
-				row.Challenge = true
-				row.Who = "on a challenge, not probed"
-				break
-			}
-			if who, err := c.Whoami(ctx, name); err != nil {
-				row.Who = "probe failed: " + err.Error()
+			if pk, err := c.Peek(ctx, name); err != nil {
+				row.PageError = err.Error()
 			} else {
-				row.Who = who.String()
+				row.Page, row.Challenge, row.PageError = pk.URL, pk.Challenge, pk.Error
 			}
 		}
 		rows = append(rows, row)

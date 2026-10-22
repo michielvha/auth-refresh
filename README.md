@@ -6,9 +6,12 @@ dead one, has the agent drive the whole login in a headless browser on the same
 machine, so the only human step is one MFA tap. It surfaces the number-match digit
 fast enough for you to answer it.
 
-It is one static Go binary plus an agent prompt. A host needs nothing else: no Node,
-Python or browser. `auth-refresh setup` fetches Playwright's driver and Chromium into
-the user cache.
+auth-refresh is a static Go binary plus an agent prompt. The browser is not pure
+Go: `auth-refresh setup` downloads Playwright's driver (playwright-core and the
+Node.js runtime it runs on, pinned to the version the binary was built against) and
+Chromium's headless shell into your user cache. You do not install Node, Python or a
+browser yourself, but setup needs network access to registry.npmjs.org, nodejs.org
+and Playwright's browser CDN, and Chromium needs its system libraries (see below).
 
 Supported out of the box:
 
@@ -34,32 +37,81 @@ cookie jar.
 
 ## Try it on a new host
 
-Nothing on the host changes until you write a config. The safest order:
+There is no published release yet and the repository is not public, so build the
+binary on a machine that has Go and copy it over. Nothing on the target host changes
+until you write a config.
 
 ```bash
-# 1. the binary: a release asset, `go install`, or a copied static build
-go install github.com/michielvha/auth-refresh/cmd/auth-refresh@latest
-#    or: CGO_ENABLED=0 go build -trimpath -o auth-refresh ./cmd/auth-refresh && scp ...
+# 1. build a static binary (on the build machine)
+CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -o auth-refresh ./cmd/auth-refresh
+#    macOS on Apple silicon: GOOS=darwin GOARCH=arm64
+scp auth-refresh newhost:~/.local/bin/
 
-# 2. the browser (sudo once with --with-deps on a bare OS for Chromium's libraries)
-sudo auth-refresh setup --with-deps     # or just: auth-refresh setup
+# 2. Chromium's system libraries, once, with the OS package manager (see below)
 
-# 3. prove the machinery in isolation; touches no real config or session
-scripts/fresh-host-test.sh --here --binary "$(command -v auth-refresh)"
+# 3. the driver and browser, as the user that will run the lanes (not root)
+auth-refresh setup        # downloads, then starts the browser once to prove it works
 
-# 4. a real config, then read-only checks
-mkdir -p ~/.config/auth-refresh && chmod 700 ~/.config/auth-refresh
-cp config.example.json ~/.config/auth-refresh/config.json   # edit
-$EDITOR ~/.config/auth-refresh/creds && chmod 600 ~/.config/auth-refresh/creds
-auth-refresh doctor
-auth-refresh check
+# 4. config, notes and credentials (see "Moving a config to another host")
+auth-refresh doctor       # starts the exact pinned driver and Chromium, checks the config
+auth-refresh check        # read-only; never touches a browser lane
 
 # 5. the agent (Claude Code), last
 ln -s "$PWD/agents/auth-refresh.md" ~/.claude/agents/auth-refresh.md
 ```
 
-`scripts/fresh-host-test.sh` without `--here` runs the same 24 checks in a pristine
-`ubuntu:24.04` (or `--image debian:13`) container as an unprivileged user; CI runs both.
+### System libraries
+
+`setup` installs only into your user cache and never runs a package manager. The
+headless shell links against NSS, GLib, ATK/AT-SPI, D-Bus, X11/xcb, xkbcommon,
+GBM, ALSA, expat and udev; the bundled Node.js needs libstdc++. On Fedora, ask `dnf`
+for exactly those libraries by soname, which avoids guessing package names:
+
+```bash
+sudo dnf install 'libnss3.so()(64bit)' 'libnssutil3.so()(64bit)' 'libnspr4.so()(64bit)' \
+  'libglib-2.0.so.0()(64bit)' 'libgobject-2.0.so.0()(64bit)' 'libgio-2.0.so.0()(64bit)' \
+  'libatk-1.0.so.0()(64bit)' 'libatk-bridge-2.0.so.0()(64bit)' 'libatspi.so.0()(64bit)' \
+  'libdbus-1.so.3()(64bit)' 'libX11.so.6()(64bit)' 'libXcomposite.so.1()(64bit)' \
+  'libXdamage.so.1()(64bit)' 'libXext.so.6()(64bit)' 'libXfixes.so.3()(64bit)' \
+  'libXrandr.so.2()(64bit)' 'libxcb.so.1()(64bit)' 'libxkbcommon.so.0()(64bit)' \
+  'libgbm.so.1()(64bit)' 'libexpat.so.1()(64bit)' 'libudev.so.1()(64bit)' \
+  'libasound.so.2()(64bit)' 'libstdc++.so.6()(64bit)'
+```
+
+That list is the `NEEDED` entries of the headless shell and Node.js that
+Playwright 1.62.1 downloads (read with `readelf -d`). If the browser still fails to
+start, list what is missing and install that by soname the same way:
+
+```bash
+ldd ~/.cache/ms-playwright/chromium_headless_shell-*/chrome-headless-shell-linux64/chrome-headless-shell | grep 'not found'
+```
+
+On Debian or Ubuntu, Playwright's own `install-deps` knows the package names: run it
+with the driver directory `auth-refresh setup` prints (by default
+`~/.cache/ms-playwright-go/<version>`):
+`sudo <driver dir>/node <driver dir>/package/cli.js install-deps chromium-headless-shell`.
+Run `setup` itself as your normal user, not root.
+
+### Moving a config to another host
+
+Copy `config.json` and `notes.md` privately (`scp`, or paste them into an editor
+over SSH); they name accounts and internal hosts, so do not put them in a repository
+or a chat. Copy `creds` separately the same way, then `chmod 600` it. Paths written
+as `~/...` (`creds_file`, `notes_file`, token `file`s, `path_prepend`) resolve
+against the new home directory, so a different username needs no edits.
+
+Before the first `check`, edit the copy for the new host:
+
+- delete identities whose CLIs, kube contexts or tokens are not on it, and
+  `path_prepend` entries that do not exist there (for example a Linuxbrew prefix);
+- drop browser and TLS settings that only a corporate proxy needed
+  (`chromium_args`, `ignore_https_errors`, per-identity `verify_tls: false`) unless
+  the new host is behind the same proxy;
+- delete `browser.capture_saml_assertions` and `browser.netlog_bodies` if present:
+  those features were removed and the keys are now rejected by name.
+
+Do not copy `~/.local/share/auth-refresh` (lane profiles and saved sessions) or any
+CLI token cache. A clean trial starts cold, and every login is then exercised for real.
 
 ## Configuration
 
@@ -79,23 +131,32 @@ Identity types: `azure`, `aws_sso`, `kube`, `gh`, `docker`, `http_token`, `http_
 ## Commands
 
 ```
-auth-refresh check [--json] [--no-lanes]   exit 0 all OK, 1 something dead, 2 host problem
-auth-refresh doctor                        config, credentials, browser, binaries
-auth-refresh env                           export PATH line with the config's path_prepend
-auth-refresh setup [--with-deps]           Playwright driver + Chromium headless shell
+auth-refresh check [--json]     exit 0 all OK (WARN included), 1 something dead, 2 host problem
+auth-refresh doctor             config, credentials, binaries; starts the pinned driver and Chromium
+auth-refresh env                export PATH line with the config's path_prepend
+auth-refresh setup              Playwright driver + Chromium headless shell into the user cache
 auth-refresh lane list|status|start|stop|send|park|whoami|mfa
 ```
 
+`check` runs CLI and HTTP probes only. A `DEAD` line means the credential is expired
+or missing; a `WARN` line (RBAC `Forbidden`, timeout, unreachable API, an output it
+does not recognise) means a login would not help, so it carries no fix.
+
+`lane status` is passive: pid, saved session, the page's URL and whether it shows a
+live challenge, read without navigating or waiting on the page. `lane whoami` asks
+the IdP in a throwaway page and is refused unless the lane is parked on
+`about:blank`, so it can never kill a login in progress.
+
 Lane commands exit 3 when the lane is not running.
+
+The driver honours Playwright's environment: `PLAYWRIGHT_DRIVER_PATH`,
+`PLAYWRIGHT_NODEJS_PATH`, `PLAYWRIGHT_BROWSERS_PATH`.
 
 ## Security notes
 
 - A lane's `out/sessions.json` is a live credential. Lane directories are 0700, files
   and the control socket 0600.
 - `controls` never returns a password field's value, only `(filled)`.
-- `browser.capture_saml_assertions` writes decoded SAML assertions to disk, and
-  `browser.netlog_bodies` keeps API response bodies for `netdump`. Both are debugging
-  aids and off by default.
 - `browser.ignore_https_errors` and per-identity `verify_tls: false` exist for
   TLS-intercepting corporate proxies. Leave them off anywhere else.
 - Credentials never transit the shell: `fillcred` reads them inside the driver.
@@ -110,11 +171,15 @@ conversation, not as a subagent, or the MFA number arrives after the push has ex
 ## Development
 
 ```bash
-go test ./...          # the lane end-to-end test drives a real browser; it skips until `auth-refresh setup`
+go test ./...                    # lane tests drive a real Chromium; they skip until `auth-refresh setup`
+AUTH_REFRESH_E2E=1 go test -count=1 -run 'TestLaneEndToEnd|TestProbe' ./internal/lane/   # fail instead of skip
 go vet ./...
 golangci-lint run
-scripts/fresh-host-test.sh
 ```
+
+CI runs the same: the usual Go checks, then `setup` and the real-browser tests with
+`AUTH_REFRESH_E2E=1` on an Ubuntu runner, against a fake IdP. Fedora has not been
+through an acceptance run yet.
 
 ## License
 

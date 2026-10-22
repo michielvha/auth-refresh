@@ -41,9 +41,13 @@ If `auth-refresh` itself is not found, that is a host problem: report it and sto
 auth-refresh check
 ```
 
-It prints one line per identity (`OK`, `DEAD`, `MISSING`, `WARN`), a `Next:`
-line naming what to dispatch for each dead one, and the lane status. Report
-that as a table. Exit code 2 means a **host problem** (missing binary, bad
+It prints one line per identity (`OK`, `DEAD`, `MISSING`, `WARN`) and a `Next:`
+line naming what to dispatch for each dead one. Report that as a table. It runs
+CLI and HTTP probes only and never touches a browser lane; for lanes run
+`$L status` (also passive). Only `DEAD` and `MISSING` are logins to fix. `WARN`
+(RBAC `Forbidden`, timeout, unreachable API server, output it does not
+recognise) has no fix on purpose: a login cannot cure it, so report it as a
+finding and never start a login for it. Exit code 2 means a **host problem** (missing binary, bad
 config): report it, name the file to fix, and stop. A missing binary is never
 a dead session, and you never start a login for it.
 
@@ -61,7 +65,9 @@ under `lanes` in config with the account it holds and what it `owns`.
 ```bash
 $L list                    # lane, account, what it owns
 $L start <lane>            # idempotent
-$L whoami <lane>           # asks the IdP directly: no MFA, no push
+$L status                  # passive: pid, saved session, page URL, live challenge; never navigates
+$L whoami <lane>           # asks the IdP in a throwaway page: no MFA, no push. Refused
+                           # unless the lane is parked on about:blank
 $L send <lane> '<json>'    # one driver action, prints the JSON result
 $L park <lane>             # about:blank: kills a live challenge, keeps cookies
 ```
@@ -70,17 +76,19 @@ Exit code 3 from any `lane` command means the lane is not running.
 
 Driver actions: `goto {url}`, `fill {selector,text}`, `fillcred {selector,field}`,
 `click {selector}`, `clicktext {text}`, `press {key}`, `select`, `text`,
-`textfull {file}`, `html {selector}`, `controls` (password values show as `(filled)`), `labels`, `waiturl {pattern,ms}`,
-`wait {ms}`, `shot {file}`, `netdump`, `state {file}`, `download`, `upload`, `quit`.
+`textfull {file}`, `html {selector}`, `controls` (password values show as `(filled)`), `waiturl {pattern,ms}`,
+`wait {ms}`, `shot {file}`, `state {file}`, `quit`.
 
 **Pick the lane from what you are logging into, never from what is warm.** A
 cached IdP session outranks whatever username you type, so a login in the
 wrong lane silently authenticates as the wrong person and the resulting "user
 is not assigned to this application" is a misdiagnosis. `fillcred` refuses a
 credential section that is not its own lane (`LANE MISMATCH`): if you see
-that, switch lanes, never drop the section. Run `whoami` before and after
-every login, and read the account name printed on the MFA screen; abort if it
-is not the one you meant.
+that, switch lanes, never drop the section. Before every login run `$L status`:
+a page other than `about:blank` may be another flow in progress, so park it
+only if it is yours and finished or abandoned, then `whoami`. After the login
+lands: `waiturl`, `state`, `park`, then `whoami`. Read the account name printed
+on the MFA screen; abort if it is not the one you meant.
 
 **Within one lane, one IdP session serves every federated login.** If two
 identities in the same lane are dead (typically az and aws), establish the
@@ -257,7 +265,9 @@ Establishes the IdP browser session for a lane, so later flows go through
 without a password. If the caller did not name a lane, infer it from what they
 want to reach (config `owns`) and say which you picked.
 
-1. `$L start <lane>`, `$L whoami <lane>`. If already LIVE as the right account, stop.
+1. `$L start <lane>`, `$L status`. If the page is not `about:blank`, see
+   "Lanes" before parking. Once parked, `$L whoami <lane>`; if already LIVE as
+   the right account, stop.
 2. `goto` the target app (or the IdP `org_url`). Okta identifier-first:
    `fillcred` into `input[name=identifier]` (`field: user`), click `input[type=submit]`.
 3. `fillcred` into `input[type=password]` (`field: pass`), click `input[type=submit]`.
@@ -265,7 +275,8 @@ want to reach (config `owns`) and say which you picked.
    Then the hard gate above.
 5. `waiturl` on the landing page, **then** `state`. Saving mid-redirect stores
    a half-session that bounces back to login next time.
-6. `$L whoami <lane>` and report who the IdP says it is, not who you intended.
+6. `$L park <lane>`, then `$L whoami <lane>` (it is refused on any other page)
+   and report who the IdP says it is, not who you intended.
 
 Before blaming auth for an app failure, probe the app's API directly (config
 `http_up` identities): an unreachable backend is a finding, not a login.
@@ -291,8 +302,8 @@ device code lives about 15 minutes; past that, dispatch `start` again.
 ## Rules
 
 - Never print an access token, refresh token, PAT, password, TOTP, or the
-  contents of a token cache, `creds_file`, a lane's `out/sessions.json` or
-  any captured SAML assertion. Presence, owner and expiry only. Credentials
+  contents of a token cache, `creds_file` or a lane's `out/sessions.json`.
+  Presence, owner and expiry only. Credentials
   go into pages only via `fillcred`, never interpolated into a shell command.
 - One outstanding push across all lanes. Never re-push while one is pending.
 - Pick a lane by what you are logging into, never by what is warm.

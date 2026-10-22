@@ -13,24 +13,27 @@ import (
 
 // Command is one driver action. Unused fields are ignored per action.
 type Command struct {
-	Action   string   `json:"action"`
-	URL      string   `json:"url,omitempty"`
-	Selector string   `json:"selector,omitempty"`
-	Text     string   `json:"text,omitempty"`
-	Field    string   `json:"field,omitempty"`
-	Section  string   `json:"section,omitempty"`
-	Pattern  string   `json:"pattern,omitempty"`
-	MS       int      `json:"ms,omitempty"`
-	File     string   `json:"file,omitempty"`
-	FullPage *bool    `json:"fullPage,omitempty"`
-	Value    string   `json:"value,omitempty"`
-	Label    string   `json:"label,omitempty"`
-	Key      string   `json:"key,omitempty"`
-	Lines    []string `json:"lines,omitempty"`
-	Files    []string `json:"files,omitempty"`
-	Chooser  bool     `json:"chooser,omitempty"`
-	Path     string   `json:"path,omitempty"`
-	Click    string   `json:"clicktext,omitempty"`
+	Action   string `json:"action"`
+	URL      string `json:"url,omitempty"`
+	Selector string `json:"selector,omitempty"`
+	Text     string `json:"text,omitempty"`
+	Field    string `json:"field,omitempty"`
+	Section  string `json:"section,omitempty"`
+	Pattern  string `json:"pattern,omitempty"`
+	MS       int    `json:"ms,omitempty"`
+	File     string `json:"file,omitempty"`
+	FullPage *bool  `json:"fullPage,omitempty"`
+	Value    string `json:"value,omitempty"`
+	Label    string `json:"label,omitempty"`
+	Key      string `json:"key,omitempty"`
+}
+
+// Peek is a passive look at a lane's page: it never navigates, clicks or
+// waits on the page, so it is safe while a login or MFA challenge is live.
+type Peek struct {
+	URL       string `json:"url"`
+	Challenge bool   `json:"on_challenge"`
+	Error     string `json:"error,omitempty"`
 }
 
 // Result is the driver's answer. Extra holds action-specific fields.

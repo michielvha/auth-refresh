@@ -34,7 +34,7 @@ func TestProviderCLIProbeFailures(t *testing.T) {
 
 func TestProviderHTTPProbeFailures(t *testing.T) {
 	file := filepath.Join(t.TempDir(), "token")
-	if err := os.WriteFile(file, []byte("fixture-token"), 0600); err != nil {
+	if err := os.WriteFile(file, []byte("fixture-token"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	for _, tc := range []struct {

@@ -93,6 +93,10 @@ func TestProbeWithoutDriver(t *testing.T) {
 	t.Setenv("PLAYWRIGHT_NODEJS_PATH", "")
 	t.Run("missing driver", func(t *testing.T) {
 		dir := t.TempDir()
+		t.Setenv("AUTH_REFRESH_TEST_SYNTHETIC_DRIVER", "1")
+		oldVerify := verifyRuntime
+		verifyRuntime = func(string) error { return nil }
+		t.Cleanup(func() { verifyRuntime = oldVerify })
 		t.Setenv("PLAYWRIGHT_DRIVER_PATH", dir)
 		_, err := Probe(5*time.Second, nil)
 		if err == nil || !strings.Contains(err.Error(), "not installed") || !strings.Contains(err.Error(), "auth-refresh setup") {
@@ -115,6 +119,10 @@ func TestProbeWithoutDriver(t *testing.T) {
 		if err := os.WriteFile(node, []byte("#!/bin/sh\n"+script+"\n"), 0o700); err != nil {
 			t.Fatal(err)
 		}
+		t.Setenv("AUTH_REFRESH_TEST_SYNTHETIC_DRIVER", "1")
+		oldVerify := verifyRuntime
+		verifyRuntime = func(string) error { return nil }
+		t.Cleanup(func() { verifyRuntime = oldVerify })
 		t.Setenv("PLAYWRIGHT_DRIVER_PATH", dir)
 		t.Setenv("PLAYWRIGHT_NODEJS_PATH", node)
 	}

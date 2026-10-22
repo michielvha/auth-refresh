@@ -98,6 +98,10 @@ sleep 300
 	if err := os.WriteFile(node, []byte(script), 0o700); err != nil {
 		t.Fatal(err)
 	}
+	t.Setenv("AUTH_REFRESH_TEST_SYNTHETIC_DRIVER", "1")
+	oldVerify := verifyRuntime
+	verifyRuntime = func(string) error { return nil }
+	t.Cleanup(func() { verifyRuntime = oldVerify })
 	t.Setenv("PLAYWRIGHT_DRIVER_PATH", dir)
 	t.Setenv("PLAYWRIGHT_CLI_PATH", "")
 	t.Setenv("PLAYWRIGHT_NODEJS_PATH", node)

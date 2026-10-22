@@ -206,10 +206,12 @@ func lastLine(s string, n int) string {
 	return s
 }
 
-var aadstsRe = regexp.MustCompile(`AADSTS\d+`)
-var azureAuthRe = regexp.MustCompile(`(?i)AADSTS(?:70043|700082|700084|50058|50173|50076)|refresh token.*expired|please run.*az login|invalid_grant|interaction_required`)
-var transportRe = regexp.MustCompile(`(?i)timed? out|timeout|unreachable|failed to connect|could not connect|connection (?:refused|reset)|no such host|name resolution|failed to resolve|service unavailable|serviceunavailable|tls|x509|dial tcp|throttl|rate limit`)
-var authenticationRe = regexp.MustCompile(`(?i)unauthorized|authentication required|invalid.*token|token.*invalid|token.*expired|bad credentials|not logged in`)
+var (
+	aadstsRe         = regexp.MustCompile(`AADSTS\d+`)
+	azureAuthRe      = regexp.MustCompile(`(?i)AADSTS(?:70043|700082|700084|50058|50173|50076)|refresh token.*expired|please run.*az login|invalid_grant|interaction_required`)
+	transportRe      = regexp.MustCompile(`(?i)timed? out|timeout|unreachable|failed to connect|could not connect|connection (?:refused|reset)|no such host|name resolution|failed to resolve|service unavailable|serviceunavailable|tls|x509|dial tcp|throttl|rate limit`)
+	authenticationRe = regexp.MustCompile(`(?i)unauthorized|authentication required|invalid.*token|token.*invalid|token.*expired|bad credentials|not logged in`)
+)
 
 func azure(ctx context.Context, id config.Identity, d Deps) (Status, string) {
 	last := "never"

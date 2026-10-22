@@ -18,6 +18,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/michielvha/auth-refresh/internal/browserruntime"
 	"github.com/michielvha/auth-refresh/internal/config"
 	"github.com/michielvha/auth-refresh/internal/creds"
 	"github.com/mxschmitt/playwright-go"
@@ -32,9 +33,21 @@ const (
 // Node.js runtime it needs) and the Chromium headless shell into the current
 // user's cache. It installs no system libraries and needs no root.
 func Install() error {
-	return playwright.Install(&playwright.RunOptions{
-		Browsers: []string{"chromium"}, OnlyInstallShell: true, Verbose: false,
-	})
+	dir, err := DriverDir()
+	if err != nil {
+		return err
+	}
+	if err := browserruntime.Install(dir); err != nil {
+		return err
+	}
+	d, err := playwright.NewDriver(&playwright.RunOptions{Verbose: false})
+	if err != nil {
+		return err
+	}
+	if err := d.DownloadDriver(); err != nil {
+		return err
+	}
+	return browserruntime.Verify(dir)
 }
 
 // DriverVersion is the Playwright driver version this binary is pinned to.
@@ -66,6 +79,8 @@ func DriverDir() (string, error) {
 
 // CheckDriver reports whether the pinned driver is on disk, without starting
 // it or creating anything.
+var verifyRuntime = browserruntime.Verify
+
 func CheckDriver() (string, error) {
 	dir, err := DriverDir()
 	if err != nil {
@@ -77,6 +92,9 @@ func CheckDriver() (string, error) {
 	}
 	if _, err := os.Stat(cli); err != nil {
 		return dir, fmt.Errorf("playwright driver %s is not installed (%s missing): run `auth-refresh setup`", DriverVersion(), cli)
+	}
+	if err := verifyRuntime(dir); err != nil {
+		return dir, err
 	}
 	return dir, nil
 }

@@ -1,0 +1,9 @@
+{
+  "name": "auth-refresh",
+  "version": "0.1.0",
+  "description": "Keep the human SSO identities on a headless host alive: check them, and drive device-code and IdP logins in per-account headless browser lanes so the only human step is the MFA tap.",
+  "author": { "name": "Michiel VH" },
+  "homepage": "https://github.com/michielvha/auth-refresh",
+  "repository": "https://github.com/michielvha/auth-refresh",
+  "license": "MIT"
+}

@@ -1,0 +1,57 @@
+{
+  "_comment": "Copy to ~/.config/auth-refresh/config.json (or point AUTH_REFRESH_CONFIG at it). Host-specific; do not commit your real one.",
+  "path_prepend": ["/home/linuxbrew/.linuxbrew/bin", "/home/linuxbrew/.linuxbrew/sbin"],
+  "required_binaries": ["git", "curl", "node"],
+  "creds_file": "~/.config/auth-refresh/creds",
+
+  "idp": {
+    "kind": "okta",
+    "org_url": "https://example.okta.com",
+    "whoami_path": "/api/v1/users/me"
+  },
+  "mfa": {
+    "challenge_regex": "push notification sent|tap [0-9]",
+    "number_regex": "tap\\s+(\\d{1,3})"
+  },
+  "browser": {
+    "chromium_args": [],
+    "ignore_https_errors": false,
+    "locale": "en-US",
+    "capture_saml_assertions": false,
+    "netlog_bodies": false
+  },
+
+  "lanes": {
+    "work": {
+      "account": "me@example.com",
+      "owns": ["az", "aws", "every kube context", "the cloud portals"]
+    }
+  },
+
+  "identities": [
+    {"name": "az", "type": "azure", "lane": "work",
+     "tenant": "00000000-0000-0000-0000-000000000000",
+     "scope": "https://management.core.windows.net//.default"},
+    {"name": "aks-dev", "type": "kube", "context": "my-aks-dev", "rides_on": "az", "fix": "start az"},
+
+    {"name": "aws", "type": "aws_sso", "lane": "work",
+     "sso_session": "my-sso", "start_url": "https://d-0000000000.awsapps.com/start",
+     "probe_profile": "dev"},
+    {"name": "eks-dev", "type": "kube", "context": "eks-dev", "aws_profile": "dev", "rides_on": "aws", "fix": "start aws"},
+
+    {"name": "gh", "type": "gh", "host": "github.com", "account": "my-gh-user",
+     "fix": "gh auth login --web (device code; relay the code)"},
+    {"name": "registry", "type": "docker", "probe_image": "registry.example.com/team/image:tag",
+     "fix": "docker login (manual)"},
+
+    {"name": "ado-pat", "type": "http_token", "file": "~/.ado-pat", "auth": "basic_pass",
+     "url": "https://dev.azure.com/my-org/_apis/connectionData?api-version=7.1-preview",
+     "expect": "authenticatedUser", "fix": "person mints a new PAT"},
+    {"name": "sonar", "type": "http_token", "file": "~/.sonar-token", "auth": "basic_user",
+     "url": "https://sonar.example.com/api/authentication/validate",
+     "expect": "\"valid\":true", "fix": "person mints a new token in the UI"},
+    {"name": "internal-api", "type": "http_up", "url": "https://api.example.com/version", "expect_status": 200}
+  ],
+
+  "notes_file": "~/.config/auth-refresh/notes.md"
+}

@@ -1,0 +1,6 @@
+/auth-refresh
+/dist/
+config.json
+notes.md
+creds
+*.log

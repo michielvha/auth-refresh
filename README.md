@@ -48,7 +48,8 @@ The existing Claude agent can still use an already installed auth-refresh binary
 In Claude Code, install directly from this repository:
 
 ```text
-/plugin install auth-refresh --marketplace michielvha/auth-refresh
+/plugin marketplace add michielvha/auth-refresh
+/plugin install auth-refresh@auth-refresh
 ```
 
 In Codex, add `michielvha/auth-refresh` as a marketplace in Plugins, then install auth-refresh.
@@ -250,3 +251,13 @@ through an acceptance run yet.
 ## License
 
 MIT
+
+## Verify a runtime release
+
+Runtime releases include `checksums.txt` and `checksums.txt.sig`, signed with the VHCO Pro release
+key. Download the archive and both checksum files with `gh release download`, then verify the
+signature with [release-signing-key.asc](release-signing-key.asc) in an isolated GPG keyring.
+The primary key fingerprint must be `9A5CD8F7CF9617B1C57F359ED61B8A7F2C06BAB6`.
+Run `gpg --verify checksums.txt.sig checksums.txt`, then `sha256sum --check --ignore-missing checksums.txt`
+(or `shasum -a 256 --check --ignore-missing checksums.txt` on macOS). The plugin lock pins independently
+measured archive and binary hashes from these verified assets.

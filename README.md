@@ -35,6 +35,70 @@ and puts it in the chat and in a push notification. Lanes exist because a cached
 session silently beats whatever username you type: two accounts must never share a
 cookie jar.
 
+## Plugin installation
+
+Auth-refresh is a separate plugin. It does not require vh-adlc. The same canonical skill and
+provider workflow serve Claude, Codex and other clients that load Agent Plugins.
+
+These instructions describe the feature candidate. The published main branch and the shared
+marketplace must first pin this candidate, and a verified runtime release must be published.
+Until the release lock is populated, the new skill reports that release provisioning is pending.
+The existing Claude agent can still use an already installed auth-refresh binary on PATH.
+
+In Claude Code, install directly from this repository:
+
+```text
+/plugin install auth-refresh --marketplace michielvha/auth-refresh
+```
+
+In Codex, add `michielvha/auth-refresh` as a marketplace in Plugins, then install auth-refresh.
+The CLI equivalents are:
+
+```sh
+codex plugin marketplace add michielvha/auth-refresh
+codex plugin add auth-refresh@auth-refresh
+```
+
+The shared `michielvha/vh-adlc` marketplace also offers auth-refresh as a separate selection;
+install `auth-refresh@vhco-tools`. Installing vh-adlc alone does not enable auth-refresh.
+Refresh the marketplace and the plugin in your client's native manager to update it. Uninstalling
+the plugin leaves private config, credentials, CLI caches and lane sessions on disk.
+
+The new skill's installer requires Bash and Python 3. It checks the pinned archive and binary
+SHA-256 values before execution and verifies the cached binary on every reuse. It writes only
+to your user cache. It never builds missing source or changes shell profiles.
+
+### Notifications and compatibility
+
+Claude Remote Control keeps PushNotification, immediate number delivery, the bounded confirmation
+watcher and background completion. The legacy agent remains a thin entry point into the same
+canonical workflow, with its existing tools and installed-binary bootstrap. The old 20 KB save
+heuristic is removed: check the expected identity and actual restoration instead.
+
+Other interactive hosts show the number immediately in chat and finish consent in the main session.
+Unattended operation needs a working phone-notification tool and continuation mechanism. Missing
+capability stops before a challenge; delivery failure parks the active challenge and suppresses
+further pushes. Chat-only delivery is never reported as a phone push.
+
+Native standalone installation has passed on Codex CLI and Claude CLI in isolated Linux profiles.
+Phone delivery through the owner's Remote Control session, VS Code Local, and published remote
+installation remain acceptance tests. Installation success alone does not establish those behaviors.
+
+### Verified browser dependencies
+
+`setup`, `doctor` and lane startup now check the managed runtime against the embedded
+`internal/browserruntime/lock.json`. Setup verifies each upstream archive before extraction and
+checks all pinned driver, Node.js and browser files before executing them. It rejects unexpected
+driver code and refuses unverified external Node/CLI overrides. Existing corrupt caches are left
+untouched with an error; select a fresh cache for recovery. `PLAYWRIGHT_DRIVER_PATH` and
+`PLAYWRIGHT_BROWSERS_PATH` can select those managed directories.
+
+The verified archive lock currently covers **Linux amd64**. Other browser platforms fail explicitly
+until their archives are pinned and tested. This is separate from the Go binary's build targets.
+Regenerate measured hashes with `python3 scripts/pin-browser-runtime.py`, then review the source
+URLs and lock diff. The sources are the exact playwright-core npm package, Node.js distribution
+and Chrome Headless Shell archive named in that lock. No browser payload is executed to generate it.
+
 ## Try it on a new host
 
 There is no published release yet and the repository is not public, so build the
@@ -149,8 +213,8 @@ the IdP in a throwaway page and is refused unless the lane is parked on
 
 Lane commands exit 3 when the lane is not running.
 
-The driver honours Playwright's environment: `PLAYWRIGHT_DRIVER_PATH`,
-`PLAYWRIGHT_NODEJS_PATH`, `PLAYWRIGHT_BROWSERS_PATH`.
+Managed runtime directories honor `PLAYWRIGHT_DRIVER_PATH` and `PLAYWRIGHT_BROWSERS_PATH`.
+Unverified `PLAYWRIGHT_NODEJS_PATH` and `PLAYWRIGHT_CLI_PATH` overrides are refused.
 
 ## Security notes
 
@@ -163,9 +227,9 @@ The driver honours Playwright's environment: `PLAYWRIGHT_DRIVER_PATH`,
 
 ## Agent runtime
 
-The prompt targets Claude Code (`tools: Bash, Read, PushNotification`, background Bash
-calls that wake the agent on completion), and the repository root is a Claude Code
-plugin. The binary is runtime-agnostic. The `start` modes must run in the main
+The shared skill selects host capabilities. The legacy Claude agent retains
+`tools: Bash, Read, PushNotification` and background completion behavior. The repository
+contains native Claude and portable manifests. The binary is runtime-agnostic. The `start` modes must run in the main
 conversation, not as a subagent, or the MFA number arrives after the push has expired.
 
 ## Development

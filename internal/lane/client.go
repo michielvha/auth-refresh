@@ -109,8 +109,8 @@ func (c *Client) Start(ctx context.Context, name string) (string, error) {
 	deadline := time.After(90 * time.Second)
 	for {
 		select {
-		case _ = <-exited: // The driver log below supplies the startup failure details.
-			return "", fmt.Errorf("lane %s FAILED to start:\n%s", name, tail(p.Log, 8))
+		case waitErr := <-exited:
+			return "", errors.Join(fmt.Errorf("lane %s FAILED to start:\n%s", name, tail(p.Log, 8)), waitErr)
 		case <-deadline:
 			return "", fmt.Errorf("lane %s did not answer within 90s:\n%s", name, tail(p.Log, 8))
 		case <-ctx.Done():

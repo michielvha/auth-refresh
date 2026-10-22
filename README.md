@@ -40,15 +40,15 @@ cookie jar.
 Auth-refresh is a separate plugin. It does not require vh-adlc. The same canonical skill and
 provider workflow serve Claude, Codex and other clients that load Agent Plugins.
 
-These instructions describe the feature candidate. The published main branch and the shared
-marketplace must first pin this candidate, and a verified runtime release must be published.
-Until the release lock is populated, the new skill reports that release provisioning is pending.
-The existing Claude agent can still use an already installed auth-refresh binary on PATH.
+The candidate is published on `feat/portable-auth-refresh` in this repository and in vh-adlc.
+The commands below select that branch for acceptance testing; default branches have not been merged.
+The plugin lock pins the signed runtime release `v0.2.0-rc.1`, with archive and binary hashes measured
+from its verified assets. The existing Claude agent can still use an installed binary on PATH.
 
 In Claude Code, install directly from this repository:
 
 ```text
-/plugin marketplace add michielvha/auth-refresh
+/plugin marketplace add https://github.com/michielvha/auth-refresh.git#feat/portable-auth-refresh
 /plugin install auth-refresh@auth-refresh
 ```
 
@@ -56,7 +56,7 @@ In Codex, add `michielvha/auth-refresh` as a marketplace in Plugins, then instal
 The CLI equivalents are:
 
 ```sh
-codex plugin marketplace add michielvha/auth-refresh
+codex plugin marketplace add michielvha/auth-refresh --ref feat/portable-auth-refresh
 codex plugin add auth-refresh@auth-refresh
 ```
 
@@ -83,9 +83,11 @@ Unattended operation needs a working phone-notification tool and continuation me
 capability stops before a challenge; delivery failure parks the active challenge and suppresses
 further pushes. Chat-only delivery is never reported as a phone push.
 
-Native standalone installation has passed on Codex CLI and Claude CLI in isolated Linux profiles.
-Phone delivery through the owner's Remote Control session, VS Code Local, and published remote
-installation remain acceptance tests. Installation success alone does not establish those behaviors.
+Native installation is tested in disposable Codex CLI and Claude CLI profiles on Linux, through both
+GitHub marketplace routes. Phone delivery through the owner's Remote Control session, VS Code Local
+and desktop invocation remain acceptance tests. CLI installation success does not establish those
+behaviors. Executable runtime acceptance covers Linux amd64; other published binaries have verified
+asset integrity, while the managed browser remains limited to Linux amd64.
 
 ### Verified browser dependencies
 

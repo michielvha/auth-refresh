@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 import tarfile
 import tempfile
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
@@ -77,6 +78,39 @@ class RuntimeInstallTests(unittest.TestCase):
         self.lock = {"version": None, "assets": {}}
         with self.assertRaisesRegex(ValueError, "release provisioning is pending"):
             self.run_install()
+        self.assertFalse(self.marker.exists())
+
+    def test_private_release_uses_authenticated_gh_and_still_verifies_bytes(self):
+        url = "https://github.com/example/private/releases/download/v0.0.0/fixture.tar.gz"
+        calls = []
+
+        def run(command, **kwargs):
+            calls.append((command, kwargs))
+            if command[0] == "curl":
+                return SimpleNamespace(returncode=22)
+            self.assertEqual(command[:5], ["gh", "release", "download", "v0.0.0", "--repo"])
+            self.assertEqual(command[5], "example/private")
+            self.assertEqual(command[6:8], ["--pattern", "fixture.tar.gz"])
+            self.assertEqual(kwargs["timeout"], 70)
+            (Path(command[-1]) / "fixture.tar.gz").write_bytes(self.archive)
+            return SimpleNamespace(returncode=0)
+
+        with patch.object(self.module.subprocess, "run", side_effect=run):
+            self.assertEqual(self.module.download(url), self.archive)
+        self.assertEqual(len(calls), 2)
+        self.assertFalse(self.marker.exists())
+
+    def test_failed_download_does_not_send_arbitrary_urls_to_gh(self):
+        for url in ["https://example.invalid/archive", "https://github.com/a/b/releases/download/v1/*.gz"]:
+            with self.subTest(url=url), patch.object(self.module.subprocess, "run", return_value=SimpleNamespace(returncode=22)) as run:
+                with self.assertRaisesRegex(ValueError, "release download failed"):
+                    self.module.download(url)
+                self.assertEqual(run.call_count, 1)
+
+    def test_missing_private_release_access_fails_without_execution(self):
+        with patch.object(self.module.subprocess, "run", return_value=SimpleNamespace(returncode=22)):
+            with self.assertRaisesRegex(ValueError, "repository access is required"):
+                self.module.download("https://github.com/a/b/releases/download/v1/archive.tar.gz")
         self.assertFalse(self.marker.exists())
 
 

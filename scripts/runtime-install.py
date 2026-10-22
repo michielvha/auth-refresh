@@ -5,11 +5,41 @@ import json
 import os
 from pathlib import Path
 import platform
+import re
 import subprocess
 import sys
 import tarfile
 import tempfile
 from urllib.parse import urlsplit
+
+
+def read_archive(path):
+    with Path(path).open("rb") as archive:
+        data = archive.read(128 * 1024 * 1024 + 1)
+    if len(data) > 128 * 1024 * 1024:
+        raise ValueError("release archive exceeds size limit")
+    return data
+
+
+def download_github_asset(parts):
+    segments = parts.path.strip("/").split("/")
+    if (parts.hostname != "github.com" or parts.query or parts.fragment or len(segments) != 6
+            or segments[2:4] != ["releases", "download"]
+            or any(not re.fullmatch(r"[A-Za-z0-9_.-]+", value) or value.startswith("-")
+                   for value in (segments[0], segments[1], segments[4], segments[5]))):
+        raise ValueError("release download failed")
+    owner, repo, _, _, tag, asset = segments
+    with tempfile.TemporaryDirectory(prefix="auth-refresh-github-") as staged:
+        try:
+            result = subprocess.run([
+                "gh", "release", "download", tag, "--repo", owner + "/" + repo,
+                "--pattern", asset, "--dir", staged,
+            ], capture_output=True, timeout=70)
+        except FileNotFoundError as error:
+            raise ValueError("private release download requires authenticated gh with repository access") from error
+        if result.returncode:
+            raise ValueError("release download failed; authenticated gh with repository access is required for private releases")
+        return read_archive(Path(staged) / asset)
 
 
 def download(url):
@@ -23,11 +53,8 @@ def download(url):
             "--output", staged.name, url,
         ], capture_output=True, timeout=70)
         if result.returncode:
-            raise ValueError("release download failed")
-        data = staged.read(128 * 1024 * 1024 + 1)
-        if len(data) > 128 * 1024 * 1024:
-            raise ValueError("release archive exceeds size limit")
-        return data
+            return download_github_asset(parts)
+        return read_archive(staged.name)
 
 
 def main():

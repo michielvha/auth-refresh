@@ -308,6 +308,8 @@ func awsSSO(ctx context.Context, id config.Identity, d Deps) (Status, string) {
 		why = "timed out"
 	}
 	switch {
+	case setupOrPermissionRe.MatchString(o.Combined()):
+		return Warn, fmt.Sprintf("%s probe failed, not recognised as an auth failure: %s; %s", id.ProbeProfile, why, sso)
 	case awsAuthRe.MatchString(o.Combined()):
 		return Dead, fmt.Sprintf("%s: %s; %s", id.ProbeProfile, why, sso)
 	case o.Code == 124 || awsNetRe.MatchString(o.Combined()):
@@ -468,7 +470,10 @@ func ghFromJSON(id config.Identity, entries []ghEntry) (Status, string) {
 	if transportRe.MatchString(e.Error) {
 		return Warn, fmt.Sprintf("%s on %s: service unavailable, not a login", who, id.Host)
 	}
-	return Dead, fmt.Sprintf("%s on %s: %s", who, id.Host, lastLine(strings.SplitN(e.Error, "\n", 2)[0], 90))
+	if authenticationRe.MatchString(e.Error) {
+		return Dead, fmt.Sprintf("%s on %s: %s", who, id.Host, lastLine(strings.SplitN(e.Error, "\n", 2)[0], 90))
+	}
+	return Warn, fmt.Sprintf("%s on %s: cannot establish authentication: %s", who, id.Host, lastLine(strings.SplitN(e.Error, "\n", 2)[0], 90))
 }
 
 func ghFromText(id config.Identity, o Output) (Status, string) {
@@ -489,6 +494,9 @@ func ghFromText(id config.Identity, o Output) (Status, string) {
 		}
 		return OK, "logged in on " + id.Host
 	}
+	if !authenticationRe.MatchString(all) && !strings.Contains(all, "Logged in to ") && !strings.Contains(all, "not logged into") {
+		return Warn, "unrecognised GitHub probe output; not a login"
+	}
 	if id.Account == "" {
 		return Dead, lastLine(all, 90)
 	}
@@ -508,12 +516,18 @@ func docker(ctx context.Context, id config.Identity, d Deps) (Status, string) {
 
 func httpToken(ctx context.Context, id config.Identity, d Deps) (Status, string) {
 	st, err := os.Stat(id.File)
-	if err != nil {
+	if errors.Is(err, os.ErrNotExist) {
 		return Missing, "no token at " + id.File
+	}
+	if err != nil {
+		return Warn, "cannot inspect token file"
 	}
 	raw, err := os.ReadFile(id.File)
 	if err != nil {
-		return Missing, fmt.Sprintf("cannot read %s: %v", id.File, err)
+		return Warn, fmt.Sprintf("cannot read %s: %v", id.File, err)
+	}
+	if strings.TrimSpace(string(raw)) == "" {
+		return Missing, "empty token file"
 	}
 	header := authHeader(id.Auth, strings.TrimSpace(string(raw)))
 	var code int
@@ -583,6 +597,9 @@ func get(ctx context.Context, d Deps, url, auth string, verify bool) (int, strin
 		return 0, msg
 	}
 	defer func() { _ = resp.Body.Close() }()
-	b, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	b, readErr := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if readErr != nil {
+		return 0, "incomplete HTTP response"
+	}
 	return resp.StatusCode, string(b)
 }

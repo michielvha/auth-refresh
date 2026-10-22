@@ -8,7 +8,8 @@ exceptions. Resolve this skill's real directory before reading sibling resources
 
 The plugin root is two directories above this skill. Obtain its pinned runtime with
 `bash <plugin-root>/scripts/ensure-auth-refresh.sh`, then prepend the returned binary's directory to
-PATH for this operation. An unavailable release or digest mismatch is a provisioning blocker; report
+PATH for this operation. Set `AUTH_REFRESH_BIN` to that full verified path in every shell call;
+the shared workflow binds its command function to that path so host PATH entries cannot replace it. An unavailable release or digest mismatch is a provisioning blocker; report
 it instead of building replacement code or using an unverified executable.
 
 Read [capabilities.md](references/capabilities.md) before any login and

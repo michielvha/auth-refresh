@@ -23,7 +23,12 @@ does not source the shell rc, so tools installed by Homebrew, asdf etc. are
 often invisible there; `env` prints PATH with the config's `path_prepend`:
 
 ```bash
-export PATH="$HOME/.local/bin:$PATH"; eval "$(auth-refresh env)"
+if [ -n "${AUTH_REFRESH_BIN:-}" ]; then
+  auth-refresh() { "$AUTH_REFRESH_BIN" "$@"; }
+else
+  export PATH="$HOME/.local/bin:$PATH"
+fi
+eval "$(auth-refresh env)"
 L="auth-refresh lane"; S=${AUTH_REFRESH_HOME:-$HOME/.local/share/auth-refresh}; mkdir -p "$S"
 ```
 

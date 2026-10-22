@@ -29,6 +29,9 @@ func TestProviderCLIProbeFailures(t *testing.T) {
 		{"registry DNS failure", config.Identity{Name: "registry", Type: "docker", ProbeImage: "registry.example.invalid/a:1", Fix: "docker login"}, map[string]Output{"docker manifest": {Code: 1, Stderr: "dial tcp: lookup registry.example.invalid: no such host"}}, Warn, ""},
 		{"registry authorization failure", config.Identity{Name: "registry", Type: "docker", ProbeImage: "registry.example.invalid/a:1", Fix: "docker login"}, map[string]Output{"docker manifest": {Code: 1, Stderr: "denied: requested access to the resource is denied"}}, Warn, ""},
 		{"registry authentication failure", config.Identity{Name: "registry", Type: "docker", ProbeImage: "registry.example.invalid/a:1", Fix: "docker login"}, map[string]Output{"docker manifest": {Code: 1, Stderr: "unauthorized: authentication required"}}, Dead, "unauthorized"},
+		{"AWS denied without cache", config.Identity{Name: "aws", Type: "aws_sso", Lane: "admin", SSOSession: "test", ProbeProfile: "test"}, map[string]Output{"aws sts": {Code: 1, Stderr: "AccessDenied: insufficient permissions"}}, Warn, ""},
+		{"GitHub local permission failure", config.Identity{Name: "gh", Type: "gh", Host: "github.com", Account: "fixture", Fix: "gh auth login --web"}, map[string]Output{"gh auth status --json": {Stdout: `{"hosts":{"github.com":[{"state":"error","error":"permission denied reading configuration","active":true,"login":"fixture"}]}}`}}, Warn, ""},
+		{"GitHub unknown text output", config.Identity{Name: "gh", Type: "gh", Host: "github.com", Account: "fixture", Fix: "gh auth login --web"}, map[string]Output{"gh auth status": {Code: 1, Stderr: "unexpected output"}}, Warn, ""},
 	})
 }
 

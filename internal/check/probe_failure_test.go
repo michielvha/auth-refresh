@@ -19,6 +19,7 @@ func TestWrappedCredentialPluginFailuresDoNotOfferLogin(t *testing.T) {
 		{"network", "Could not connect to the endpoint URL: https://oidc.example.invalid/token"},
 		{"permission", "ERROR: Permission denied reading cache"},
 		{"policy", "AADSTS53003: Access blocked by Conditional Access policies"},
+		{"policy with OAuth wrapper", "invalid_grant: AADSTS53003: Access blocked by Conditional Access policies"},
 		{"unknown cause", "credential plugin stopped unexpectedly"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -27,6 +28,19 @@ func TestWrappedCredentialPluginFailuresDoNotOfferLogin(t *testing.T) {
 				t.Fatalf("got %+v, want WARN without a login fix", r)
 			}
 		})
+	}
+}
+
+func TestAzureProviderCodesTakePrecedenceOverOAuthWrapper(t *testing.T) {
+	id := config.Identity{Name: "azure", Type: "azure", Lane: "admin"}
+	for _, output := range []string{
+		"invalid_grant: AADSTS53003: Access blocked by Conditional Access policies",
+		"invalid_grant: aadsts99999: unknown provider failure",
+	} {
+		r := One(context.Background(), id, deps(t, map[string]Output{"az account": {Code: 1, Stderr: output}}))
+		if r.Status != Warn || r.Fix != "" {
+			t.Fatalf("got %+v, want WARN without a login fix", r)
+		}
 	}
 }
 

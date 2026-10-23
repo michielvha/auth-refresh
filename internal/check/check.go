@@ -207,12 +207,25 @@ func lastLine(s string, n int) string {
 }
 
 var (
-	aadstsRe            = regexp.MustCompile(`AADSTS\d+`)
-	azureAuthRe         = regexp.MustCompile(`(?i)AADSTS(?:70043|700082|700084|50058|50173|50076)|refresh token.*expired|please run.*az login|invalid_grant|interaction_required`)
+	aadstsRe            = regexp.MustCompile(`(?i)AADSTS\d+`)
+	azureAuthCodeRe     = regexp.MustCompile(`(?i)^AADSTS(?:70043|700082|700084|50058|50173|50076)$`)
+	azureAuthRe         = regexp.MustCompile(`(?i)refresh token.*expired|please run.*az login|invalid_grant|interaction_required`)
 	transportRe         = regexp.MustCompile(`(?i)timed? out|timeout|unreachable|failed to connect|could not connect|connection (?:refused|reset)|no such host|name resolution|failed to resolve|service unavailable|serviceunavailable|tls|\bssl\b|x509|certificate[_ ]verify[_ ]failed|dial tcp|throttl|rate limit`)
 	authenticationRe    = regexp.MustCompile(`(?i)unauthorized|authentication required|invalid.*token|token.*invalid|token.*expired|bad credentials|not logged in|status code: 401|HTTP 401`)
 	setupOrPermissionRe = regexp.MustCompile(`(?i)accessdenied|forbidden|permission denied|invalidconfig|profile.*not.*found|not configured|invalid choice|unknown option`)
 )
+
+// A generic OAuth wrapper cannot turn a policy or unknown provider code into
+// a supported credential rejection. Only known recoverable AADSTS codes qualify.
+func azureCredentialFailure(output string) bool {
+	codes := aadstsRe.FindAllString(output, -1)
+	for _, code := range codes {
+		if !azureAuthCodeRe.MatchString(code) {
+			return false
+		}
+	}
+	return len(codes) > 0 || azureAuthRe.MatchString(output)
+}
 
 func azure(ctx context.Context, id config.Identity, d Deps) (Status, string) {
 	last := "never"
@@ -235,7 +248,7 @@ func azure(ctx context.Context, id config.Identity, d Deps) (Status, string) {
 		if rc == 124 && why == "" {
 			why = "timed out"
 		}
-		if azureAuthRe.MatchString(out) {
+		if azureCredentialFailure(out) {
 			return Dead, fmt.Sprintf("needs `start %s` (last login %s): %s", id.Name, last, why)
 		}
 		return Warn, fmt.Sprintf("probe failed, not recognised as an auth failure (last login %s): %s", last, why)
@@ -393,7 +406,9 @@ func kube(ctx context.Context, id config.Identity, d Deps) (Status, string) {
 		return Warn, "credential plugin setup or permission problem: " + why
 	case transportRe.MatchString(all):
 		return Warn, fmt.Sprintf("context %s: unreachable, not an auth failure: %s", id.Context, why)
-	case kubeAuthRe.MatchString(all) || azureAuthRe.MatchString(all) || awsAuthRe.MatchString(all):
+	case aadstsRe.MatchString(all) && !azureCredentialFailure(all):
+		return Warn, fmt.Sprintf("context %s: identity provider policy or configuration problem, not a login: %s", id.Context, why)
+	case kubeAuthRe.MatchString(all) || azureCredentialFailure(all) || awsAuthRe.MatchString(all):
 		return Dead, fmt.Sprintf("context %s: %s (rides on %s)", id.Context, why, rides)
 	case kubeUnsupportedRe.MatchString(all):
 		return Warn, fmt.Sprintf("context %s: cannot tell, `kubectl auth whoami` needs kubectl and cluster >= 1.28: %s", id.Context, why)

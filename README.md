@@ -39,15 +39,14 @@ cookie jar.
 Auth-refresh is a separate plugin. It does not require vh-adlc. The same canonical skill and
 provider workflow serve Claude, Codex and other clients that load Agent Plugins.
 
-The candidate is published on `feat/portable-auth-refresh` in this repository and in vh-adlc.
-The commands below select that branch for acceptance testing; default branches have not been merged.
+Install the standalone plugin from this repository's default branch.
 The plugin lock pins the signed runtime release `v0.2.0-rc.1`, with archive and binary hashes measured
 from its verified assets. The existing Claude agent can still use an installed binary on PATH.
 
 In Claude Code, install directly from this repository:
 
 ```text
-/plugin marketplace add https://github.com/michielvha/auth-refresh.git#feat/portable-auth-refresh
+/plugin marketplace add https://github.com/michielvha/auth-refresh.git
 /plugin install auth-refresh@auth-refresh
 ```
 
@@ -55,12 +54,15 @@ In Codex, add `michielvha/auth-refresh` as a marketplace in Plugins, then instal
 The CLI equivalents are:
 
 ```sh
-codex plugin marketplace add michielvha/auth-refresh --ref feat/portable-auth-refresh
+codex plugin marketplace add michielvha/auth-refresh
 codex plugin add auth-refresh@auth-refresh
 ```
 
-The shared `michielvha/vh-adlc` marketplace also offers auth-refresh as a separate selection;
-install `auth-refresh@vhco-tools`. Installing vh-adlc alone does not enable auth-refresh.
+The shared marketplace integration is still awaiting merge in
+[vh-adlc PR #24](https://github.com/michielvha/vh-adlc/pull/24). To test it, add
+`michielvha/vh-adlc` with `--ref feat/portable-auth-refresh` in Codex, or
+`https://github.com/michielvha/vh-adlc.git#feat/portable-auth-refresh` in Claude Code,
+then install `auth-refresh@vhco-tools`. Installing vh-adlc alone does not enable auth-refresh.
 Refresh the marketplace and the plugin in your client's native manager to update it. Uninstalling
 the plugin leaves private config, credentials, CLI caches and lane sessions on disk.
 
@@ -110,10 +112,10 @@ auth-refresh renews their credentials. Only list identities and contexts availab
 ### Get the CLI
 
 The plugin provisions its verified runtime when invoked. If you also want to run the CLI directly,
-clone the candidate and use its installer:
+clone this repository and use its installer:
 
 ```bash
-git clone --branch feat/portable-auth-refresh https://github.com/michielvha/auth-refresh.git
+git clone https://github.com/michielvha/auth-refresh.git
 cd auth-refresh
 AUTH_REFRESH_BIN=$(bash scripts/ensure-auth-refresh.sh)
 "$AUTH_REFRESH_BIN" version

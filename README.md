@@ -6,12 +6,11 @@ dead one, has the agent drive the whole login in a headless browser on the same
 machine, so the only human step is one MFA tap. It surfaces the number-match digit
 fast enough for you to answer it.
 
-auth-refresh is a static Go binary plus an agent prompt. The browser is not pure
-Go: `auth-refresh setup` downloads Playwright's driver (playwright-core and the
-Node.js runtime it runs on, pinned to the version the binary was built against) and
-Chromium's headless shell into your user cache. You do not install Node, Python or a
-browser yourself, but setup needs network access to registry.npmjs.org, nodejs.org
-and Playwright's browser CDN, and Chromium needs its system libraries (see below).
+auth-refresh is a Go binary plus a shared agent workflow. Its plugin installer requires Bash,
+curl and Python 3. `auth-refresh setup` downloads the pinned Playwright driver, its Node.js runtime
+and Chromium's headless shell into your user cache. Node.js and Chromium do not need separate
+installation. Browser setup needs access to registry.npmjs.org, nodejs.org and Playwright's browser
+CDN, plus the system libraries listed below. Managed browser support currently covers Linux amd64.
 
 Supported out of the box:
 
@@ -65,18 +64,16 @@ install `auth-refresh@vhco-tools`. Installing vh-adlc alone does not enable auth
 Refresh the marketplace and the plugin in your client's native manager to update it. Uninstalling
 the plugin leaves private config, credentials, CLI caches and lane sessions on disk.
 
-The new skill's installer requires Bash, curl and Python 3. Private GitHub releases also require an
-authenticated `gh` CLI with access to the auth-refresh repository; failed anonymous downloads use
-`gh release download` without printing credentials. It checks the pinned archive and binary
-SHA-256 values before execution and verifies the cached binary on every reuse. It writes only
-to your user cache. It never builds missing source or changes shell profiles.
+The installer downloads the public runtime release and checks pinned archive and binary SHA-256
+values before execution. It also verifies a cached binary on every reuse. It writes to your user
+cache without changing shell profiles or requiring a Go toolchain. Private release deployments can
+use authenticated `gh` as a fallback; the public release needs no GitHub credentials.
 
 ### Notifications and compatibility
 
-Claude Remote Control keeps PushNotification, immediate number delivery, the bounded confirmation
-watcher and background completion. The legacy agent remains a thin entry point into the same
-canonical workflow, with its existing tools and installed-binary bootstrap. The old 20 KB save
-heuristic is removed: check the expected identity and actual restoration instead.
+The Claude Remote Control workflow uses PushNotification, immediate number delivery, a bounded
+confirmation watcher and background completion. The legacy agent is an entry point into that same
+workflow. A saved session is accepted by verifying its expected identity after restoration.
 
 Other interactive hosts show the number immediately in chat and finish consent in the main session.
 Unattended operation needs a working phone-notification tool and continuation mechanism. Missing
@@ -104,30 +101,128 @@ Regenerate measured hashes with `python3 scripts/pin-browser-runtime.py`, then r
 URLs and lock diff. The sources are the exact playwright-core npm package, Node.js distribution
 and Chrome Headless Shell archive named in that lock. No browser payload is executed to generate it.
 
-## Try it on a new host
+## First-time setup
 
-There is no published release yet and the repository is not public, so build the
-binary on a machine that has Go and copy it over. Nothing on the target host changes
-until you write a config.
+Create the local configuration files below for this machine. Install the provider CLIs you intend
+to use and configure their accounts first. For AWS, the SSO session and profile must already exist in the AWS CLI config;
+auth-refresh renews their credentials. Only list identities and contexts available on this machine.
+
+### Get the CLI
+
+The plugin provisions its verified runtime when invoked. If you also want to run the CLI directly,
+clone the candidate and use its installer:
 
 ```bash
-# 1. build a static binary (on the build machine)
-CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -o auth-refresh ./cmd/auth-refresh
-#    macOS on Apple silicon: GOOS=darwin GOARCH=arm64
-scp auth-refresh newhost:~/.local/bin/
-
-# 2. Chromium's system libraries, once, with the OS package manager (see below)
-
-# 3. the driver and browser, as the user that will run the lanes (not root)
-auth-refresh setup        # downloads, then starts the browser once to prove it works
-
-# 4. config, notes and credentials (see "Moving a config to another host")
-auth-refresh doctor       # starts the exact pinned driver and Chromium, checks the config
-auth-refresh check        # read-only; never touches a browser lane
-
-# 5. the agent (Claude Code), last
-ln -s "$PWD/agents/auth-refresh.md" ~/.claude/agents/auth-refresh.md
+git clone --branch feat/portable-auth-refresh https://github.com/michielvha/auth-refresh.git
+cd auth-refresh
+AUTH_REFRESH_BIN=$(bash scripts/ensure-auth-refresh.sh)
+"$AUTH_REFRESH_BIN" version
 ```
+
+Use `"$AUTH_REFRESH_BIN"` for the following shell commands. A fresh shell can obtain the path again
+by running the installer from the checkout. This uses the published signed release.
+
+### Create config.json
+
+Create the private configuration directory:
+
+```bash
+umask 077
+mkdir -p ~/.config/auth-refresh
+chmod 700 ~/.config/auth-refresh
+```
+
+In your local editor, create `~/.config/auth-refresh/config.json`. This minimal example defines one
+Okta account lane and one AWS identity. Replace the example values with your IdP organization,
+account, AWS SSO session, start URL and profile before using it:
+
+```json
+{
+  "creds_file": "~/.config/auth-refresh/creds",
+  "notes_file": "~/.config/auth-refresh/notes.md",
+  "idp": {
+    "kind": "okta",
+    "org_url": "https://example.okta.com"
+  },
+  "lanes": {
+    "work": {
+      "account": "you@example.com",
+      "owns": ["aws"]
+    }
+  },
+  "identities": [
+    {
+      "name": "aws",
+      "type": "aws_sso",
+      "lane": "work",
+      "sso_session": "work",
+      "start_url": "https://d-0000000000.awsapps.com/start",
+      "probe_profile": "work"
+    }
+  ]
+}
+```
+
+[config.example.json](config.example.json) documents examples for Azure, Kubernetes, GitHub,
+registries, manually issued tokens and service checks. Add only the entries you need. Use a separate
+lane for each human account; identities belonging to the same account can share its lane.
+Keep the TLS defaults unless your environment specifically requires a proxy configuration.
+
+### Create notes.md
+
+Create `~/.config/auth-refresh/notes.md` in your editor. Write the account ownership and login rules
+an agent needs on this machine. For example:
+
+```markdown
+# Local authentication rules
+
+The work lane must authenticate as you@example.com.
+Use the work AWS SSO session and profile.
+Do not switch other GitHub accounts or change global Git authentication.
+Ask before starting a login outside the identities listed in config.json.
+```
+
+Replace those examples with your own rules. The workflow reads this file before acting. If you do
+not need local notes, omit `notes_file` from the config instead of pointing it at a missing file.
+
+### Create credentials and token files
+
+For browser lanes, create `~/.config/auth-refresh/creds` in your local editor. Use one INI section
+per lane; its section name must match the name under `lanes`. Enter your own username and password
+locally, replacing both example values:
+
+```ini
+[work]
+user=you@example.com
+pass=replace-with-your-password
+```
+
+For the example above, restrict all three files after saving them (omit `notes.md` here if you did
+not create that optional file):
+
+```bash
+chmod 600 ~/.config/auth-refresh/config.json ~/.config/auth-refresh/notes.md ~/.config/auth-refresh/creds
+```
+
+For a `http_token` identity, mint its token through the provider's normal UI and save it locally at
+the identity's `file` path with mode `0600`. Token issuance remains manual. Provider CLI login caches
+are managed by those CLIs. A checks-only configuration can omit `lanes`, `idp` and `creds_file`.
+
+### Install the browser and check setup
+
+Install the system libraries below, then run these commands as the normal user who will run the lanes:
+
+```bash
+"$AUTH_REFRESH_BIN" setup
+"$AUTH_REFRESH_BIN" doctor
+"$AUTH_REFRESH_BIN" check
+```
+
+`setup` verifies the downloads and starts the browser. `doctor` checks the config, configured CLI
+binaries, credential-file permissions, notes and browser startup. `check` reports authentication
+status without starting a login. Once these work, invoke the plugin to refresh one configured
+identity and complete any MFA challenge on your own device. Browser sessions are created on this
+machine during login and retained in its private runtime state.
 
 ### System libraries
 
@@ -160,27 +255,6 @@ with the driver directory `auth-refresh setup` prints (by default
 `~/.cache/ms-playwright-go/<version>`):
 `sudo <driver dir>/node <driver dir>/package/cli.js install-deps chromium-headless-shell`.
 Run `setup` itself as your normal user, not root.
-
-### Moving a config to another host
-
-Copy `config.json` and `notes.md` privately (`scp`, or paste them into an editor
-over SSH); they name accounts and internal hosts, so do not put them in a repository
-or a chat. Copy `creds` separately the same way, then `chmod 600` it. Paths written
-as `~/...` (`creds_file`, `notes_file`, token `file`s, `path_prepend`) resolve
-against the new home directory, so a different username needs no edits.
-
-Before the first `check`, edit the copy for the new host:
-
-- delete identities whose CLIs, kube contexts or tokens are not on it, and
-  `path_prepend` entries that do not exist there (for example a Linuxbrew prefix);
-- drop browser and TLS settings that only a corporate proxy needed
-  (`chromium_args`, `ignore_https_errors`, per-identity `verify_tls: false`) unless
-  the new host is behind the same proxy;
-- delete `browser.capture_saml_assertions` and `browser.netlog_bodies` if present:
-  those features were removed and the keys are now rejected by name.
-
-Do not copy `~/.local/share/auth-refresh` (lane profiles and saved sessions) or any
-CLI token cache. A clean trial starts cold, and every login is then exercised for real.
 
 ## Configuration
 
@@ -242,13 +316,15 @@ conversation, not as a subagent, or the MFA number arrives after the push has ex
 ```bash
 go test ./...                    # lane tests drive a real Chromium; they skip until `auth-refresh setup`
 AUTH_REFRESH_E2E=1 go test -count=1 -run 'TestLaneEndToEnd|TestProbe' ./internal/lane/   # fail instead of skip
+CGO_ENABLED=1 AUTH_REFRESH_E2E=1 go test -race -count=1 ./...  # requires a C compiler on Linux
 go vet ./...
 golangci-lint run
 ```
 
-CI runs the same: the usual Go checks, then `setup` and the real-browser tests with
-`AUTH_REFRESH_E2E=1` on an Ubuntu runner, against a fake IdP. Fedora has not been
-through an acceptance run yet.
+CI runs the usual Go checks, then `setup` and real-browser tests with `AUTH_REFRESH_E2E=1`
+on an Ubuntu runner against a fake IdP. Fedora 43 Linux amd64 has passed runtime provisioning,
+browser startup and the fake-IdP browser suite. Phone delivery, desktop/VS Code invocation and the
+complete live-provider matrix remain separate acceptance tests.
 
 ## License
 

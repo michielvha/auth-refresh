@@ -40,7 +40,7 @@ Auth-refresh is a separate plugin. It does not require vh-adlc. The same canonic
 provider workflow serve Claude, Codex and other clients that load Agent Plugins.
 
 Install the standalone plugin from this repository's default branch.
-The plugin lock pins the signed runtime release `v0.2.0-rc.1`, with archive and binary hashes measured
+The plugin lock pins the signed runtime release `v0.2.0-rc.2`, with archive and binary hashes measured
 from its verified assets. The existing Claude agent can still use an installed binary on PATH.
 
 In Claude Code, install directly from this repository:

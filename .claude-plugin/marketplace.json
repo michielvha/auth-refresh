@@ -1,0 +1,13 @@
+{
+  "name": "auth-refresh",
+  "owner": {
+    "name": "Michiel VH"
+  },
+  "plugins": [
+    {
+      "name": "auth-refresh",
+      "source": "./",
+      "description": "Keep the human SSO identities on a headless host alive: check them, and drive device-code and IdP logins in per-account headless browser lanes so the only human step is the MFA tap."
+    }
+  ]
+}

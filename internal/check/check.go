@@ -206,7 +206,13 @@ func lastLine(s string, n int) string {
 	return s
 }
 
-var aadstsRe = regexp.MustCompile(`AADSTS\d+`)
+var (
+	aadstsRe            = regexp.MustCompile(`AADSTS\d+`)
+	azureAuthRe         = regexp.MustCompile(`(?i)AADSTS(?:70043|700082|700084|50058|50173|50076)|refresh token.*expired|please run.*az login|invalid_grant|interaction_required`)
+	transportRe         = regexp.MustCompile(`(?i)timed? out|timeout|unreachable|failed to connect|could not connect|connection (?:refused|reset)|no such host|name resolution|failed to resolve|service unavailable|serviceunavailable|tls|x509|dial tcp|throttl|rate limit`)
+	authenticationRe    = regexp.MustCompile(`(?i)unauthorized|authentication required|invalid.*token|token.*invalid|token.*expired|bad credentials|not logged in|status code: 401|HTTP 401`)
+	setupOrPermissionRe = regexp.MustCompile(`(?i)accessdenied|forbidden|permission denied|invalidconfig|profile.*not.*found|not configured|invalid choice|unknown option`)
+)
 
 func azure(ctx context.Context, id config.Identity, d Deps) (Status, string) {
 	last := "never"
@@ -229,7 +235,10 @@ func azure(ctx context.Context, id config.Identity, d Deps) (Status, string) {
 		if rc == 124 && why == "" {
 			why = "timed out"
 		}
-		return Dead, fmt.Sprintf("needs `start %s` (last login %s): %s", id.Name, last, why)
+		if azureAuthRe.MatchString(out) {
+			return Dead, fmt.Sprintf("needs `start %s` (last login %s): %s", id.Name, last, why)
+		}
+		return Warn, fmt.Sprintf("probe failed, not recognised as an auth failure (last login %s): %s", last, why)
 	}
 	return OK, fmt.Sprintf("access token until %s (last login %s)", lastLine(o.Stdout, 40), last)
 }
@@ -243,16 +252,15 @@ func ssoCacheFile(home, session string) string {
 
 func normStartURL(u string) string { return strings.TrimRight(strings.TrimSpace(u), "/#") }
 
-// ssoToken reads the cached token of id's sso-session. alive is false with a
-// reason for a missing, malformed, foreign or expired token.
-func ssoToken(id config.Identity, d Deps) (alive bool, detail string) {
+// ssoToken distinguishes absent/expired credentials from unreadable or foreign cache metadata.
+func ssoToken(id config.Identity, d Deps) (Status, string) {
 	file := ssoCacheFile(d.Home, id.SSOSession)
 	raw, err := os.ReadFile(file)
 	if errors.Is(err, os.ErrNotExist) {
-		return false, fmt.Sprintf("no SSO token cached for sso_session %s", id.SSOSession)
+		return Dead, fmt.Sprintf("no SSO token cached for sso_session %s", id.SSOSession)
 	}
 	if err != nil {
-		return false, fmt.Sprintf("cannot read SSO cache %s: %v", filepath.Base(file), err)
+		return Warn, fmt.Sprintf("cannot read SSO cache %s: %v", filepath.Base(file), err)
 	}
 	var c struct {
 		AccessToken string `json:"accessToken"`
@@ -260,19 +268,25 @@ func ssoToken(id config.Identity, d Deps) (alive bool, detail string) {
 		ExpiresAt   string `json:"expiresAt"`
 	}
 	if err := json.Unmarshal(raw, &c); err != nil {
-		return false, fmt.Sprintf("SSO cache %s is malformed: %v", filepath.Base(file), err)
+		return Warn, fmt.Sprintf("SSO cache %s is malformed: %v", filepath.Base(file), err)
 	}
-	if c.AccessToken == "" || c.ExpiresAt == "" {
-		return false, fmt.Sprintf("SSO cache %s has no accessToken/expiresAt", filepath.Base(file))
+	if c.AccessToken == "" {
+		return Dead, fmt.Sprintf("SSO cache %s has no accessToken", filepath.Base(file))
+	}
+	if c.ExpiresAt == "" {
+		return Warn, "SSO cache has no expiresAt metadata"
 	}
 	if id.StartURL != "" && normStartURL(c.StartURL) != normStartURL(id.StartURL) {
-		return false, fmt.Sprintf("SSO cache for sso_session %s is for start URL %s, config says %s", id.SSOSession, c.StartURL, id.StartURL)
+		return Warn, fmt.Sprintf("SSO cache for sso_session %s is for start URL %s, config says %s", id.SSOSession, c.StartURL, id.StartURL)
 	}
 	left, alive := until(c.ExpiresAt, d.Now())
 	if !alive && left != "expired" {
-		return false, fmt.Sprintf("SSO cache %s has an unreadable expiresAt %q", filepath.Base(file), c.ExpiresAt)
+		return Warn, fmt.Sprintf("SSO cache %s has an unreadable expiresAt %q", filepath.Base(file), c.ExpiresAt)
 	}
-	return alive, "SSO token " + left
+	if alive {
+		return OK, "SSO token " + left
+	}
+	return Dead, "SSO token " + left
 }
 
 var (
@@ -282,16 +296,12 @@ var (
 
 func awsSSO(ctx context.Context, id config.Identity, d Deps) (Status, string) {
 	if id.ProbeProfile == "" {
-		alive, sso := ssoToken(id, d)
-		if alive {
-			return OK, sso
-		}
-		return Dead, sso
+		return ssoToken(id, d)
 	}
 	// The probe first: a successful call may refresh the cached token.
 	o := runT(ctx, d, 25*time.Second, nil, "aws", "sts", "get-caller-identity",
 		"--profile", id.ProbeProfile, "--query", "Arn", "--output", "text")
-	alive, sso := ssoToken(id, d)
+	cacheStatus, sso := ssoToken(id, d)
 	if o.Code == 0 {
 		return OK, fmt.Sprintf("%s -> %s; %s", id.ProbeProfile, lastLine(o.Stdout, 120), sso)
 	}
@@ -300,10 +310,16 @@ func awsSSO(ctx context.Context, id config.Identity, d Deps) (Status, string) {
 		why = "timed out"
 	}
 	switch {
-	case !alive || awsAuthRe.MatchString(o.Combined()):
+	case setupOrPermissionRe.MatchString(o.Combined()):
+		return Warn, fmt.Sprintf("%s probe failed, not recognised as an auth failure: %s; %s", id.ProbeProfile, why, sso)
+	case cacheStatus == Warn:
+		return Warn, sso
+	case awsAuthRe.MatchString(o.Combined()):
 		return Dead, fmt.Sprintf("%s: %s; %s", id.ProbeProfile, why, sso)
 	case o.Code == 124 || awsNetRe.MatchString(o.Combined()):
 		return Warn, fmt.Sprintf("%s unreachable, not an auth failure: %s; %s", id.ProbeProfile, why, sso)
+	case cacheStatus == Dead:
+		return Dead, fmt.Sprintf("%s: %s; %s", id.ProbeProfile, why, sso)
 	}
 	return Warn, fmt.Sprintf("%s probe failed, not recognised as an auth failure: %s; %s", id.ProbeProfile, why, sso)
 }
@@ -368,6 +384,8 @@ func kube(ctx context.Context, id config.Identity, d Deps) (Status, string) {
 		return Warn, fmt.Sprintf("context %s: timed out, network or a credential plugin waiting for input; check %s", id.Context, rides)
 	case kubeTLSRe.MatchString(all):
 		return Warn, fmt.Sprintf("context %s: TLS problem, not a login: %s", id.Context, why)
+	case strings.Contains(all, "executable") && (strings.Contains(all, "not found") || strings.Contains(all, "permission denied")):
+		return Warn, "credential plugin setup problem: " + why
 	case kubeAuthRe.MatchString(all):
 		return Dead, fmt.Sprintf("context %s: %s (rides on %s)", id.Context, why, rides)
 	case kubeForbiddenRe.MatchString(all):
@@ -453,11 +471,20 @@ func ghFromJSON(id config.Identity, entries []ghEntry) (Status, string) {
 	case "timeout":
 		return Warn, fmt.Sprintf("%s on %s: timed out, not an auth failure", who, id.Host)
 	}
-	return Dead, fmt.Sprintf("%s on %s: %s", who, id.Host, lastLine(strings.SplitN(e.Error, "\n", 2)[0], 90))
+	if transportRe.MatchString(e.Error) {
+		return Warn, fmt.Sprintf("%s on %s: service unavailable, not a login", who, id.Host)
+	}
+	if authenticationRe.MatchString(e.Error) {
+		return Dead, fmt.Sprintf("%s on %s: %s", who, id.Host, lastLine(strings.SplitN(e.Error, "\n", 2)[0], 90))
+	}
+	return Warn, fmt.Sprintf("%s on %s: cannot establish authentication: %s", who, id.Host, lastLine(strings.SplitN(e.Error, "\n", 2)[0], 90))
 }
 
 func ghFromText(id config.Identity, o Output) (Status, string) {
 	all := o.Combined()
+	if transportRe.MatchString(all) {
+		return Warn, "GitHub unreachable, not an auth failure"
+	}
 	host := regexp.QuoteMeta(id.Host)
 	acct := `\S+`
 	if id.Account != "" {
@@ -471,6 +498,9 @@ func ghFromText(id config.Identity, o Output) (Status, string) {
 		}
 		return OK, "logged in on " + id.Host
 	}
+	if !authenticationRe.MatchString(all) && !strings.Contains(all, "Logged in to ") && !strings.Contains(all, "not logged into") {
+		return Warn, "unrecognised GitHub probe output; not a login"
+	}
 	if id.Account == "" {
 		return Dead, lastLine(all, 90)
 	}
@@ -482,17 +512,26 @@ func docker(ctx context.Context, id config.Identity, d Deps) (Status, string) {
 	if o.Code == 0 {
 		return OK, strings.SplitN(id.ProbeImage, "/", 2)[0]
 	}
-	return Dead, lastLine(o.Combined(), 100)
+	if o.Code != 124 && authenticationRe.MatchString(o.Combined()) {
+		return Dead, lastLine(o.Combined(), 100)
+	}
+	return Warn, "registry probe failed, not recognised as an auth failure: " + lastLine(o.Combined(), 100)
 }
 
 func httpToken(ctx context.Context, id config.Identity, d Deps) (Status, string) {
 	st, err := os.Stat(id.File)
-	if err != nil {
+	if errors.Is(err, os.ErrNotExist) {
 		return Missing, "no token at " + id.File
+	}
+	if err != nil {
+		return Warn, "cannot inspect token file"
 	}
 	raw, err := os.ReadFile(id.File)
 	if err != nil {
-		return Missing, fmt.Sprintf("cannot read %s: %v", id.File, err)
+		return Warn, fmt.Sprintf("cannot read %s: %v", id.File, err)
+	}
+	if strings.TrimSpace(string(raw)) == "" {
+		return Missing, "empty token file"
 	}
 	header := authHeader(id.Auth, strings.TrimSpace(string(raw)))
 	var code int
@@ -514,9 +553,15 @@ func httpToken(ctx context.Context, id config.Identity, d Deps) (Status, string)
 		return OK, "valid"
 	}
 	if code == 0 {
-		return Dead, "unreachable: " + body + warn
+		return Warn, "unreachable: " + body + warn
 	}
-	return Dead, fmt.Sprintf("HTTP %d, rejected%s", code, warn)
+	if code == http.StatusUnauthorized {
+		return Dead, fmt.Sprintf("HTTP %d, rejected%s", code, warn)
+	}
+	if code == http.StatusOK && strings.Contains(strings.ReplaceAll(body, " ", ""), `"valid":false`) {
+		return Dead, "token rejected" + warn
+	}
+	return Warn, fmt.Sprintf("HTTP %d, cannot establish token validity%s", code, warn)
 }
 
 func authHeader(scheme, tok string) string {
@@ -535,7 +580,7 @@ func httpUp(ctx context.Context, id config.Identity, d Deps) (Status, string) {
 	if code == id.ExpectStatus {
 		return OK, fmt.Sprintf("HTTP %d %s", code, id.URL)
 	}
-	return Dead, fmt.Sprintf("HTTP %d %s", code, id.URL)
+	return Warn, fmt.Sprintf("HTTP %d %s (service health, not a login)", code, id.URL)
 }
 
 // get returns status 0 and a short reason on a transport failure.
@@ -556,6 +601,9 @@ func get(ctx context.Context, d Deps, url, auth string, verify bool) (int, strin
 		return 0, msg
 	}
 	defer func() { _ = resp.Body.Close() }()
-	b, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	b, readErr := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if readErr != nil {
+		return 0, "incomplete HTTP response"
+	}
 	return resp.StatusCode, string(b)
 }

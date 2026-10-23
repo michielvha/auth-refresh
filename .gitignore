@@ -4,3 +4,5 @@ config.json
 notes.md
 /creds
 *.log
+
+__pycache__/

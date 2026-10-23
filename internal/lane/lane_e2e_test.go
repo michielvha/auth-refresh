@@ -376,7 +376,7 @@ func TestProbeStartsThePinnedBrowser(t *testing.T) {
 	t.Run("a missing browser is a clear failure", func(t *testing.T) {
 		t.Setenv("PLAYWRIGHT_BROWSERS_PATH", t.TempDir())
 		_, err := Probe(90*time.Second, nil)
-		if err == nil || !strings.Contains(err.Error(), "launch chromium") || strings.Contains(err.Error(), "npx") {
+		if err == nil || !strings.Contains(err.Error(), "runtime file missing: browser/") || strings.Contains(err.Error(), "npx") {
 			t.Fatalf("got %v", err)
 		}
 	})

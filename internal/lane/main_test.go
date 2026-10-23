@@ -13,6 +13,11 @@ const probeHangEnv = "AUTH_REFRESH_TEST_PROBE_HANG"
 
 // TestMain lets this test binary act as Probe's helper subprocess.
 func TestMain(m *testing.M) {
+	// Synthetic driver fixtures exercise process cleanup, not artifact provenance.
+	// This hook exists only in the test binary, never the production executable.
+	if os.Getenv("AUTH_REFRESH_TEST_SYNTHETIC_DRIVER") == "1" {
+		verifyRuntime = func(string) error { return nil }
+	}
 	if os.Getenv(probeHelperEnv) == "1" {
 		var hook func()
 		if path := os.Getenv(probeHangEnv); path != "" && probeHangHook != nil {

@@ -93,8 +93,10 @@ on the MFA screen; abort if it is not the one you meant.
 identities in the same lane are dead (typically az and aws), establish the
 session once on the first flow and chain the others on the same live context.
 Do not restart the lane, re-run `start idp` or restore a session file in
-between. Two taps for one lane is a sequencing defect. Nothing carries across
-lanes.
+between. Nothing carries across lanes. The IdP may still require MFA per app
+(an app sign-on policy): a second number match for the next flow on a live
+session is the IdP's rule, not a sequencing defect. Surface it like the first,
+one push at a time.
 
 **Never have two lanes on a challenge screen at once.** The IdP allows one
 outstanding push; a second makes the number ambiguous and the wrong pick
@@ -243,6 +245,9 @@ $L send <lane> '{"action":"click","selector":"button:has-text(\"Confirm and cont
 $L send <lane> '{"action":"click","selector":"button:has-text(\"Allow access\")"}'
 ```
 
+A cookie consent banner can cover the device page and swallow the click while
+the driver still reports `ok`. If `controls` lists `Accept`/`Decline` next to
+`Confirm and continue`, click `Decline` first, then retry the confirm.
 Use `controls` between steps to see the real buttons. Done when the log says
 `Successfully logged into Start URL`. (Older AWS CLIs without
 `--use-device-code` print an authorize URL with a `127.0.0.1` callback; since

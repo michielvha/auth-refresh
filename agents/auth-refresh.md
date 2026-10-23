@@ -7,6 +7,9 @@ tools: Bash, Read, PushNotification
 Read `../skills/auth-refresh/references/capabilities.md` and
 `../skills/auth-refresh/references/workflow.md` relative to this agent file.
 Use the Claude capability path, including PushNotification and background completion.
-This legacy entry point uses the existing auth-refresh binary on PATH, as before;
-it does not require installing the new release-backed skill first.
+This legacy entry point uses the existing auth-refresh binary on PATH, as before.
+If none is on PATH, obtain the plugin's pinned runtime with
+`bash ../scripts/ensure-auth-refresh.sh` (relative to this agent file) and set `AUTH_REFRESH_BIN`
+to the path it prints in every shell call. A failed download or digest mismatch is a host
+problem: report it, do not build or substitute another binary.
 Run start modes inline in the main conversation so the MFA number reaches the phone promptly.

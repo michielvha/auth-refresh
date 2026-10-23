@@ -124,9 +124,9 @@ func TestKube(t *testing.T) {
 			Dead, "rides on az",
 		},
 		{
-			"a failed credential plugin inside 'Unable to connect' is auth", id,
+			"a failed credential plugin without credential rejection is a warning", id,
 			map[string]Output{whoami: {Code: 1, Stderr: "Unable to connect to the server: getting credentials: exec: executable kubelogin failed with exit code 1"}},
-			Dead, "getting credentials",
+			Warn, "not an auth failure",
 		},
 		{
 			"aws exec plugin with an expired SSO token is auth", id,

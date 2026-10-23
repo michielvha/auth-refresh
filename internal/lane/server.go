@@ -140,8 +140,7 @@ func probeInHelper(ctx context.Context, chromiumArgs []string) (string, error) {
 	case waitErr = <-done:
 	case <-ctx.Done():
 		killTree(cmd.Process.Pid, true)
-		<-done
-		return "", ctx.Err()
+		return "", errors.Join(ctx.Err(), <-done)
 	}
 	var r probeResult
 	lines := strings.Split(strings.TrimSpace(stdout.String()), "\n")

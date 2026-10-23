@@ -1,25 +1,25 @@
 {
-  "version": "0.2.0-rc.1",
+  "version": "0.2.0-rc.2",
   "assets": {
     "darwin_amd64": {
-      "url": "https://github.com/michielvha/auth-refresh/releases/download/v0.2.0-rc.1/auth-refresh_0.2.0-rc.1_darwin_amd64.tar.gz",
-      "asset_sha256": "56d7d59072f3a555a955019a109967a4bc41c053b15312a333192a55d6883ea8",
-      "binary_sha256": "0dbb42e5bb2a91ca2b363fd1c3c65e06b61ffca183165a3daae62251b92fdbba"
+      "url": "https://github.com/michielvha/auth-refresh/releases/download/v0.2.0-rc.2/auth-refresh_0.2.0-rc.2_darwin_amd64.tar.gz",
+      "asset_sha256": "8aae921e3d68ff144e73e7a30ede47b414f4a601e7da63b8866f74e4b4991bf5",
+      "binary_sha256": "f9a308a3bd5f8552c1eff2df5bdc77c613180c7576e58405e65ab81130a84b83"
     },
     "darwin_arm64": {
-      "url": "https://github.com/michielvha/auth-refresh/releases/download/v0.2.0-rc.1/auth-refresh_0.2.0-rc.1_darwin_arm64.tar.gz",
-      "asset_sha256": "0c35937d449aac520c3932831ba597c649b4b8aa042f7ec9ca88b6da1ada6a6d",
-      "binary_sha256": "a5d45bcc7c7c6f7bdf1cd6b1f8ca876260e92e0c655eeea33a1ec5d41dc77ce6"
+      "url": "https://github.com/michielvha/auth-refresh/releases/download/v0.2.0-rc.2/auth-refresh_0.2.0-rc.2_darwin_arm64.tar.gz",
+      "asset_sha256": "6b5ac74d3aa1bc600015cceff0b3662f18239ca63fb1400e728042158e621a33",
+      "binary_sha256": "d71206504a30cc5e6d5626fbefffb3aa0e13b13e5bd77ca1f5310607e0456a3b"
     },
     "linux_amd64": {
-      "url": "https://github.com/michielvha/auth-refresh/releases/download/v0.2.0-rc.1/auth-refresh_0.2.0-rc.1_linux_amd64.tar.gz",
-      "asset_sha256": "a9310709910aea6ac9bc2492ff35fe24dd1cb520522d7dc8dfa3f478b90fdf24",
-      "binary_sha256": "384a159bac9162f5d26bd3773b4b333c9deb246158d7604141821e756f1bc5c8"
+      "url": "https://github.com/michielvha/auth-refresh/releases/download/v0.2.0-rc.2/auth-refresh_0.2.0-rc.2_linux_amd64.tar.gz",
+      "asset_sha256": "c94178ac7232a06da5c9bc4bdbb6e52fdbe2d866ec88b124d44c6c6f745437f9",
+      "binary_sha256": "2aad16317918090dfa48a58e63a24d670db6ad3985993562fd933fac7060a665"
     },
     "linux_arm64": {
-      "url": "https://github.com/michielvha/auth-refresh/releases/download/v0.2.0-rc.1/auth-refresh_0.2.0-rc.1_linux_arm64.tar.gz",
-      "asset_sha256": "57f4c8066a43b6a30ea5a3bb90d85041ec3c1da363ebbf04dbcb75e72106e709",
-      "binary_sha256": "d6b5a51fda8b7264af4a1d8484e8f4a0de25ea330ec0f3e4d414d5ce8de79c49"
+      "url": "https://github.com/michielvha/auth-refresh/releases/download/v0.2.0-rc.2/auth-refresh_0.2.0-rc.2_linux_arm64.tar.gz",
+      "asset_sha256": "d1a447e092c625febb253462f77c05221823be82de3f783296bf3b297e32b895",
+      "binary_sha256": "c336171044851103a9e8693561b237f0e1e1f255bb9be6cc144bfa7dab86d1e2"
     }
   }
 }

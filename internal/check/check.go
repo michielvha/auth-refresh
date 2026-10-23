@@ -209,7 +209,7 @@ func lastLine(s string, n int) string {
 var (
 	aadstsRe            = regexp.MustCompile(`AADSTS\d+`)
 	azureAuthRe         = regexp.MustCompile(`(?i)AADSTS(?:70043|700082|700084|50058|50173|50076)|refresh token.*expired|please run.*az login|invalid_grant|interaction_required`)
-	transportRe         = regexp.MustCompile(`(?i)timed? out|timeout|unreachable|failed to connect|could not connect|connection (?:refused|reset)|no such host|name resolution|failed to resolve|service unavailable|serviceunavailable|tls|x509|dial tcp|throttl|rate limit`)
+	transportRe         = regexp.MustCompile(`(?i)timed? out|timeout|unreachable|failed to connect|could not connect|connection (?:refused|reset)|no such host|name resolution|failed to resolve|service unavailable|serviceunavailable|tls|\bssl\b|x509|certificate[_ ]verify[_ ]failed|dial tcp|throttl|rate limit`)
 	authenticationRe    = regexp.MustCompile(`(?i)unauthorized|authentication required|invalid.*token|token.*invalid|token.*expired|bad credentials|not logged in|status code: 401|HTTP 401`)
 	setupOrPermissionRe = regexp.MustCompile(`(?i)accessdenied|forbidden|permission denied|invalidconfig|profile.*not.*found|not configured|invalid choice|unknown option`)
 )
@@ -314,10 +314,10 @@ func awsSSO(ctx context.Context, id config.Identity, d Deps) (Status, string) {
 		return Warn, fmt.Sprintf("%s probe failed, not recognised as an auth failure: %s; %s", id.ProbeProfile, why, sso)
 	case cacheStatus == Warn:
 		return Warn, sso
+	case o.Code == 124 || awsNetRe.MatchString(o.Combined()) || transportRe.MatchString(o.Combined()):
+		return Warn, fmt.Sprintf("%s unreachable, not an auth failure: %s; %s", id.ProbeProfile, why, sso)
 	case awsAuthRe.MatchString(o.Combined()):
 		return Dead, fmt.Sprintf("%s: %s; %s", id.ProbeProfile, why, sso)
-	case o.Code == 124 || awsNetRe.MatchString(o.Combined()):
-		return Warn, fmt.Sprintf("%s unreachable, not an auth failure: %s; %s", id.ProbeProfile, why, sso)
 	case cacheStatus == Dead:
 		return Dead, fmt.Sprintf("%s: %s; %s", id.ProbeProfile, why, sso)
 	}
@@ -339,12 +339,13 @@ func until(iso string, now time.Time) (string, bool) {
 	return iso, false
 }
 
-// Order matters: kubectl wraps a failed credential plugin in "Unable to connect
-// to the server", so auth is matched before network; an expired *server*
-// certificate (x509) is not a login problem, so it is matched first.
+// kubectl wraps both rejected credentials and failed credential plugins in
+// "Unable to connect to the server". Check specific transport and permission
+// failures first, require a credential rejection for DEAD, then handle the
+// generic connection wrapper. An expired server certificate is not a login.
 var (
 	kubeTLSRe         = regexp.MustCompile(`(?i)x509:|certificate (?:has expired|signed by unknown)`)
-	kubeAuthRe        = regexp.MustCompile(`(?i)\(unauthorized\)|\bunauthorized\b|must be logged in|asked for the client to provide credentials|getting credentials|exec plugin|executable \S+ failed|AADSTS\d+|invalid_grant|token (?:has )?expired|expired token|sso token|refresh token`)
+	kubeAuthRe        = regexp.MustCompile(`(?i)\(unauthorized\)|\bunauthorized\b|must be logged in|asked for the client to provide credentials|invalid_grant|token (?:has )?expired|expired token`)
 	kubeForbiddenRe   = regexp.MustCompile(`(?i)\(forbidden\)|\bis forbidden\b`)
 	kubeUnsupportedRe = regexp.MustCompile(`(?i)unknown command "whoami"|doesn't have a resource type|could not find the requested resource|\(notfound\)`)
 	kubeNetRe         = regexp.MustCompile(`(?i)unable to connect to the server|dial tcp|i/o timeout|no such host|connection refused|connection reset|tls handshake timeout|context deadline exceeded|serviceunavailable|service unavailable|internalerror|internal error|bad gateway|gateway timeout|currently unable to handle`)
@@ -386,10 +387,14 @@ func kube(ctx context.Context, id config.Identity, d Deps) (Status, string) {
 		return Warn, fmt.Sprintf("context %s: TLS problem, not a login: %s", id.Context, why)
 	case strings.Contains(all, "executable") && (strings.Contains(all, "not found") || strings.Contains(all, "permission denied")):
 		return Warn, "credential plugin setup problem: " + why
-	case kubeAuthRe.MatchString(all):
-		return Dead, fmt.Sprintf("context %s: %s (rides on %s)", id.Context, why, rides)
 	case kubeForbiddenRe.MatchString(all):
 		return Warn, fmt.Sprintf("context %s: authenticated, but RBAC forbids the probe; not a login: %s", id.Context, why)
+	case setupOrPermissionRe.MatchString(all):
+		return Warn, "credential plugin setup or permission problem: " + why
+	case transportRe.MatchString(all):
+		return Warn, fmt.Sprintf("context %s: unreachable, not an auth failure: %s", id.Context, why)
+	case kubeAuthRe.MatchString(all) || azureAuthRe.MatchString(all) || awsAuthRe.MatchString(all):
+		return Dead, fmt.Sprintf("context %s: %s (rides on %s)", id.Context, why, rides)
 	case kubeUnsupportedRe.MatchString(all):
 		return Warn, fmt.Sprintf("context %s: cannot tell, `kubectl auth whoami` needs kubectl and cluster >= 1.28: %s", id.Context, why)
 	case kubeNetRe.MatchString(all):

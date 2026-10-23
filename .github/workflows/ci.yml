@@ -15,7 +15,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: michielvha/go-ci-action@bc485542c70d6cf51da9642c632ef268571597db # main
+      - uses: michielvha/go-ci-action@ab14d6420148179e8d20ecc0b7cb89760193cb37 # v0.1.0
 
   # The lane tests drive a real headless Chromium against a fake IdP. setup
   # fails if the downloaded browser cannot start, and AUTH_REFRESH_E2E=1 turns a

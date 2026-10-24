@@ -59,10 +59,10 @@ codex plugin marketplace add michielvha/auth-refresh
 codex plugin add auth-refresh@auth-refresh
 ```
 
-The shared marketplace integration is still awaiting merge in
-[vh-adlc PR #24](https://github.com/michielvha/vh-adlc/pull/24). To test it, add
-`michielvha/vh-adlc` with `--ref feat/portable-auth-refresh` in Codex, or
-`https://github.com/michielvha/vh-adlc.git#feat/portable-auth-refresh` in Claude Code,
+The shared marketplace integration is available on the default branch of
+[vh-adlc](https://github.com/michielvha/vh-adlc). Add
+`michielvha/vh-adlc` in Codex, or
+`https://github.com/michielvha/vh-adlc.git` in Claude Code,
 then install `auth-refresh@vhco-tools`. Installing vh-adlc alone does not enable auth-refresh.
 Refresh the marketplace and the plugin in your client's native manager to update it. Uninstalling
 the plugin leaves private config, credentials, CLI caches and lane sessions on disk.
@@ -83,11 +83,17 @@ Unattended operation needs a working phone-notification tool and continuation me
 capability stops before a challenge; delivery failure parks the active challenge and suppresses
 further pushes. Chat-only delivery is never reported as a phone push.
 
-Native installation is tested in disposable Codex CLI and Claude CLI profiles on Linux, through both
-GitHub marketplace routes. Phone delivery through the owner's Remote Control session, VS Code Local
-and desktop invocation remain acceptance tests. CLI installation success does not establish those
-behaviors. Executable runtime acceptance covers Linux amd64; other published binaries have verified
-asset integrity, while the managed browser remains limited to Linux amd64.
+Native installation, update and uninstall are tested in disposable Codex CLI and Claude CLI profiles
+on Linux and macOS through both GitHub marketplace routes. On macOS, Claude Desktop 3.6556.2 and
+VS Code 1.142.0 with the Claude Code extension 2.1.309 passed discovery and a read-only missing-token
+check through both routes. These GUI invocations used temporary user-scope installations. A
+project-local plugin only loads in its corresponding working directory, not a Desktop scratch session.
+
+Linux acceptance verified Azure, AWS and Okta logins and read-only AWS and Kubernetes identity
+checks. The owner reports working Remote Control phone delivery; independent review
+of the complete phone-login-to-continuation flow remains a release gate. macOS GUI acceptance
+covers read-only invocation, not managed-browser logins. The managed browser remains limited to
+Linux amd64; published macOS runtime binaries have verified integrity and executable check coverage.
 
 ### Verified browser dependencies
 

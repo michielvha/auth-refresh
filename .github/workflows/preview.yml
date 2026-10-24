@@ -1,0 +1,21 @@
+name: Preview
+
+# Adding the label has no push, so rerun branch CI to tag the current head.
+on:
+  pull_request:
+    types: [labeled]
+
+permissions: {}
+
+jobs:
+  request:
+    if: ${{ github.event.label.name == 'release:preview' && github.event.pull_request.head.repo.full_name == github.repository }}
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+    steps:
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          BRANCH: ${{ github.head_ref }}
+        run: gh workflow run ci.yml --ref "$BRANCH"

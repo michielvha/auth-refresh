@@ -351,17 +351,28 @@ measured archive and binary hashes from these verified assets.
 
 ### Version automation
 
-CI calls the SHA-pinned `vhco-pro/version-workflow` only after both `verify` and
-`browser-e2e` succeed. It currently runs with `dry-run: true` and preview tagging
-disabled: merging a change calculates a version but cannot create a tag or publish
-a release. This staging step does not claim release acceptance.
+Every repository branch push runs CI. After both `verify` and `browser-e2e`
+succeed, the SHA-pinned `vhco-pro/version-workflow` calculates the version:
 
-Before enabling publication, complete the release acceptance gate, check the
-calculated main-branch version is exactly the intended version, and configure a
-release App using `RELEASE_APP_CLIENT_ID` and `RELEASE_APP_PRIVATE_KEY`. A reviewed
-change can then pass those credentials to the shared workflow and enable tagging.
-An App-created tag starts the existing signed, tag-triggered release workflow;
-a tag pushed with `GITHUB_TOKEN` does not start another workflow.
+| Branch | Release behavior |
+| --- | --- |
+| `main` | Pushes the exact stable tag when the version is new |
+| Branch with an open `release:preview` PR at this commit | Pushes the exact prerelease tag |
+| Other branches | Calculates the version only |
+
+Adding `release:preview` reruns CI on that PR's branch; later pushes continue to
+produce prereleases until the label is removed or the PR closes. CI uses the
+branch commit so GitVersion sees its actual branch. Fork PRs do not run this
+publication flow.
+
+The release App uses the `RELEASE_APP_CLIENT_ID` repository variable and
+`RELEASE_APP_PRIVATE_KEY` secret to request a short-lived Contents: write token
+for this repository only. Its tag push starts the signed, tag-triggered release
+workflow, which receives `PGP_PRIVATE_KEY`. Check jobs receive neither key.
+
+For a transient release failure, rerun the original tag workflow after inspecting
+any partial release. Existing tags and artifacts must not be replaced; source
+fixes need a new version.
 
 After publication, verify the signature and all archive and extracted binary
 hashes before updating `auth-refresh.lock.json` and the plugin manifests in a

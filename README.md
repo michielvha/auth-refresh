@@ -304,7 +304,7 @@ Unverified `PLAYWRIGHT_NODEJS_PATH` and `PLAYWRIGHT_CLI_PATH` overrides are refu
   and the control socket 0600.
 - `controls` never returns a password field's value, only `(filled)`.
 - `browser.ignore_https_errors` and per-identity `verify_tls: false` exist for
-  TLS-intercepting corporate proxies. Leave them off anywhere else.
+  explicitly trusted TLS-intercepting proxies. Leave them off anywhere else.
 - Credentials never transit the shell: `fillcred` reads them inside the driver.
 
 ## Agent runtime

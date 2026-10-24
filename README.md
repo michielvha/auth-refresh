@@ -342,3 +342,21 @@ The primary key fingerprint must be `9A5CD8F7CF9617B1C57F359ED61B8A7F2C06BAB6`.
 Run `gpg --verify checksums.txt.sig checksums.txt`, then `sha256sum --check --ignore-missing checksums.txt`
 (or `shasum -a 256 --check --ignore-missing checksums.txt` on macOS). The plugin lock pins independently
 measured archive and binary hashes from these verified assets.
+
+### Version automation
+
+CI calls the SHA-pinned `vhco-pro/version-workflow` only after both `verify` and
+`browser-e2e` succeed. It currently runs with `dry-run: true` and preview tagging
+disabled: merging a change calculates a version but cannot create a tag or publish
+a release. This staging step does not claim release acceptance.
+
+Before enabling publication, complete the release acceptance gate, check the
+calculated main-branch version is exactly the intended version, and configure a
+release App using `RELEASE_APP_CLIENT_ID` and `RELEASE_APP_PRIVATE_KEY`. A reviewed
+change can then pass those credentials to the shared workflow and enable tagging.
+An App-created tag starts the existing signed, tag-triggered release workflow;
+a tag pushed with `GITHUB_TOKEN` does not start another workflow.
+
+After publication, verify the signature and all archive and extracted binary
+hashes before updating `auth-refresh.lock.json` and the plugin manifests in a
+separate checked change.

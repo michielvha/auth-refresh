@@ -1,12 +1,16 @@
 name: CI
 
 on:
-  pull_request:
   push:
-    branches: [main]
+    branches: ['**']
+  workflow_dispatch:
 
 permissions:
   contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
   verify:
@@ -51,8 +55,8 @@ jobs:
           AUTH_REFRESH_E2E: '1'
         run: go test -count=1 -v -run 'TestLaneEndToEnd|TestProbe' ./internal/lane/
 
-  # Keep publication disabled until the release acceptance gate is complete.
-  # A later reviewed change may enable tagging with the release App.
+  # Tags main, or an open PR's head with release:preview, after both checks pass.
+  # Other branches only calculate the version.
   version:
     needs: [verify, browser-e2e]
     permissions:
@@ -60,5 +64,6 @@ jobs:
       pull-requests: read
     uses: vhco-pro/version-workflow/.github/workflows/version.yml@3b78b04df802ea1592cbe19338d7a882d1888389 # v0.1.0
     with:
-      dry-run: true
-      preview-label: ''
+      release-app-client-id: ${{ vars.RELEASE_APP_CLIENT_ID }}
+    secrets:
+      release-app-private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}

@@ -62,7 +62,7 @@ jobs:
     permissions:
       contents: read
       pull-requests: read
-    uses: vhco-pro/version-workflow/.github/workflows/version.yml@3b78b04df802ea1592cbe19338d7a882d1888389 # v0.1.0
+    uses: vhco-pro/version-workflow/.github/workflows/version.yml@c30d3b5bf3e902a0043f6eb916f968f06378e38c # v0.1.3
     with:
       release-app-client-id: ${{ vars.RELEASE_APP_CLIENT_ID }}
     secrets:
